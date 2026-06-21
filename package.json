@@ -1,0 +1,49 @@
+{
+  "name": "zcode-account-switcher",
+  "version": "1.0.0",
+  "description": "ZCode — переключатель аккаунтов: backup/restore снимков сессии, без повторного OAuth+кода подтверждения",
+  "type": "commonjs",
+  "main": "src/cli.js",
+  "bin": {
+    "zcas": "src/cli.js",
+    "zcode-account-switcher": "src/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zcode-account-switcher/zcode-account-switcher.git"
+  },
+  "homepage": "https://github.com/zcode-account-switcher/zcode-account-switcher#readme",
+  "bugs": {
+    "url": "https://github.com/zcode-account-switcher/zcode-account-switcher/issues"
+  },
+  "keywords": [
+    "zcode",
+    "z.ai",
+    "glm",
+    "zhipu",
+    "account",
+    "switcher",
+    "account-manager",
+    "electron",
+    "cli",
+    "oauth"
+  ],
+  "author": "zcode-account-switcher contributors",
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "win32"
+  ],
+  "scripts": {
+    "start": "node src/cli.js",
+    "list": "node src/cli.js list",
+    "status": "node src/cli.js status",
+    "quota": "node src/cli.js quota",
+    "desktop": "npm --prefix desktop start",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "build": "npm --prefix desktop run build"
+  }
+}
