@@ -1,49 +1,23 @@
 {
-  "name": "zcode-account-switcher",
-  "version": "1.0.0",
-  "description": "ZCode — переключатель аккаунтов: backup/restore снимков сессии, без повторного OAuth+кода подтверждения",
-  "type": "commonjs",
-  "main": "src/cli.js",
-  "bin": {
-    "zcas": "src/cli.js",
-    "zcode-account-switcher": "src/cli.js"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/zcode-account-switcher/zcode-account-switcher.git"
-  },
-  "homepage": "https://github.com/zcode-account-switcher/zcode-account-switcher#readme",
-  "bugs": {
-    "url": "https://github.com/zcode-account-switcher/zcode-account-switcher/issues"
-  },
-  "keywords": [
-    "zcode",
-    "z.ai",
-    "glm",
-    "zhipu",
-    "account",
-    "switcher",
-    "account-manager",
-    "electron",
-    "cli",
-    "oauth"
-  ],
-  "author": "zcode-account-switcher contributors",
-  "license": "MIT",
-  "private": false,
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "os": [
-    "win32"
-  ],
+  "name": "zcode-switch",
+  "private": true,
+  "version": "1.7.0-beta.1",
+  "type": "module",
   "scripts": {
-    "start": "node src/cli.js",
-    "list": "node src/cli.js list",
-    "status": "node src/cli.js status",
-    "quota": "node src/cli.js quota",
-    "desktop": "npm --prefix desktop start",
-    "desktop:dev": "npm --prefix desktop run dev",
-    "build": "npm --prefix desktop run build"
-  }
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "dist": "node scripts/dist.mjs",
+    "check:i18n": "node scripts/check-i18n-keys.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "vite": "^5.4.8"
+  },
+  "license": "MIT",
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }
