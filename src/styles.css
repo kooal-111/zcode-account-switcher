@@ -207,6 +207,7 @@ input:focus-visible,
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 0 18px 12px;
   scrollbar-width: thin;
   scrollbar-color: #34373f transparent;
@@ -263,6 +264,14 @@ input:focus-visible,
   gap: 7px;
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.row-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tag-use {
   font-family: var(--mono);
@@ -290,6 +299,8 @@ input:focus-visible,
   color: var(--ink-mute);
   margin-top: 2px;
   letter-spacing: .03em;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 .row-actions {
@@ -1068,3 +1079,34 @@ input:focus-visible,
 .pv-item:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 .pv-item .pv-arrow { color: var(--ink-mute); font-family: var(--mono); }
 .pv-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+
+/* --- Узкие окна (минимум 520×640): перенос строк, grid-плашка клейма --- */
+@media (max-width: 600px) {
+  .topbar { padding: 12px 12px 10px; }
+  .section-head { padding: 12px 12px 6px; }
+  .list { padding: 0 12px 12px; }
+  .row { padding: 10px 10px 10px 14px; }
+  .toolbar { margin: 8px 12px 0; gap: 5px; }
+  .toolbar .btn-primary,
+  .toolbar .btn-ghost,
+  .toolbar .tog-inline { font-size: 13px; height: 34px; padding: 0 10px; }
+  .toolbar .tb-gear { margin-left: 4px; border-style: dashed; }
+
+  .row-top { flex-wrap: wrap; }
+  .row-main { flex: 1 1 100%; }
+  .row-actions { flex: 1 1 100%; justify-content: flex-end; margin-top: 7px; }
+  .row-meta { white-space: normal; }
+
+  .claim-strip {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 0 8px;
+    padding: 6px 8px;
+  }
+  .claim-strip .ic { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
+  .claim-name { grid-column: 2; grid-row: 1; }
+  .claim-grants { grid-column: 2; grid-row: 2; }
+  .claim-refreshing { grid-column: 2; grid-row: 3; }
+  .claim-strip > button { grid-column: 3; grid-row: 1 / span 2; align-self: center; }
+}
