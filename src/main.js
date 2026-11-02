@@ -3,6 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { esc, toast, openPwModal, openConfirmModal, openProviderModal, installDelegation, dismissSplash } from "./ui.js";
 import { ic } from "./icons.js";
 import { init, t, has, lang, localeTag, stripErr } from "./i18n.js";
+import { applyMock } from "./mock.js";
+import {
+  newClaimState, beginPreview, resolvePreview, failPreview, markStale,
+  isStale, plansOf, createPreviewQueue,
+} from "./claim-state.js";
+
+const invokeFn = applyMock(invoke);
 
 const $app = document.getElementById("app");
 let state = null;
@@ -81,7 +88,7 @@ async function loadAcctQuota(id) {
   acctQuota[id] = { busy: true };
   if (!uiLocked()) render();
   try {
-    const data = await invoke("get_account_quota", { id });
+    const data = await invokeFn("get_account_quota", { id });
     acctQuota[id] = { data, err: null, busy: false };
   } catch (e) {
     acctQuota[id] = { data: null, err: stripErr(e), busy: false };
@@ -90,15 +97,59 @@ async function loadAcctQuota(id) {
 }
 
 async function loadClaimPreview(id) {
-  const cur = claimable[id] || {};
-  if (cur.busy) return;
-  claimable[id] = { plans: cur.plans || [], busy: true };
+  const next = beginPreview(claimable[id] || newClaimState());
+  claimable[id] = next;
+  if (!uiLocked()) render();
   try {
-    const plans = await invoke("claim_preview", { id });
-    claimable[id] = { plans: plans || [], err: null, busy: false };
+    const plans = await invokeFn("claim_preview", { id });
+    claimable[id] = resolvePreview(next, next.requestId, plans);
   } catch (e) {
-    claimable[id] = { plans: cur.plans || [], err: String(e), busy: false };
+    claimable[id] = failPreview(next, next.requestId, stripErr(e));
   }
+  if (!uiLocked()) render();
+}
+
+// Очередь preview: максимум 2 запроса одновременно, пауза 350 мс между стартами
+// (сглаживает 429 при большом числе аккаунтов). force-запрос во время полёта
+// откладывается до завершения текущего (requeue).
+const previewRequeue = new Set();
+const previewQueue = createPreviewQueue({
+  concurrency: 2,
+  gapMs: 350,
+  task: async (id) => {
+    await loadClaimPreview(id);
+    if (previewRequeue.delete(id)) setTimeout(() => enqueuePreview(id, { force: true }), 0);
+  },
+});
+
+function enqueuePreview(id, { force = false } = {}) {
+  if (!id) return;
+  const cur = claimable[id];
+  if (previewQueue.isBusy(id)) {
+    if (force) previewRequeue.add(id);
+    return;
+  }
+  if (!force && !isStale(cur)) return;
+  if (!force && cur && (cur.status === "loading" || cur.status === "stale")) return;
+  previewQueue.enqueue(id);
+}
+
+function enqueueAllPreviews({ force = false } = {}) {
+  for (const a of state?.accounts || []) enqueuePreview(a.id, { force });
+}
+
+// Служебные обёртки для путей claim_refresh (активация + preview) —
+// та же машина состояний, но запрос идёт через другой IPC.
+function beginRefreshPreview(id) {
+  const s = beginPreview(claimable[id] || newClaimState());
+  claimable[id] = s;
+  return s.requestId;
+}
+function resolveRefreshPreview(id, reqId, plans) {
+  claimable[id] = resolvePreview(claimable[id], reqId, plans);
+}
+function failRefreshPreview(id, reqId, e) {
+  claimable[id] = failPreview(claimable[id], reqId, stripErr(e));
 }
 
 let claimWaiter = null;
@@ -109,16 +160,6 @@ function waitForClaimResult(accountId, timeoutMs = 90000) {
     const t = setTimeout(() => finish(null), timeoutMs);
     claimWaiter = { accountId, finish };
   });
-}
-
-async function awaitClaimPreviewFresh(id) {
-  claimable[id] = { ...(claimable[id] || {}), busy: true };
-  try {
-    const plans = await invoke("claim_preview", { id });
-    claimable[id] = { plans: plans || [], err: null, busy: false };
-  } catch (e) {
-    claimable[id] = { plans: claimable[id]?.plans || [], err: String(e), busy: false };
-  }
 }
 
 const accountName = (id) => (state?.accounts || []).find((a) => a.id === id)?.name || id;
@@ -146,6 +187,7 @@ const actions = {
       toast(t("m.toastSaved", { name: r.name }), "ok", t("m.toastSavedDetail"));
       await refresh(); render();
       enrollAccounts();
+      enqueuePreview(r.id, { force: true });
     });
   },
 
@@ -195,6 +237,10 @@ const actions = {
     await guard(async () => {
       await invoke("delete_account", { id });
       toast(t("m.toastDeleted"));
+      previewQueue.cancel(id);
+      delete claimable[id];
+      delete acctQuota[id];
+      delete quotaDue[id];
       await refresh(); render();
     });
   },
@@ -237,6 +283,7 @@ const actions = {
       }
       await refresh(); render();
       pokeAccount(id);
+      enqueuePreview(id, { force: true });
     });
   },
 
@@ -245,6 +292,7 @@ const actions = {
       const r = await invoke("update_account_from_live", { id });
       toast(t("m.toastSynced", { name: r.name }), "ok", t("m.toastSyncedDetail"));
       await refresh(); render();
+      enqueuePreview(id, { force: true });
     });
   },
 
@@ -312,8 +360,7 @@ const actions = {
 
   async claim(id) {
     if (claimActive || claimAllRunning || refreshClaim.running) { toast(t("m.claimBusy"), "warn"); return; }
-    const plans = claimable[id]?.plans || [];
-    const plan = plans[0];
+    const plan = plansOf(claimable[id])[0];
     if (!plan) { toast(t("m.noClaimable"), "warn"); return; }
     claimActive = true;
     try {
@@ -331,7 +378,7 @@ const actions = {
   async claimAll() {
     const ids = (state?.accounts || [])
       .map((a) => a.id)
-      .filter((id) => (claimable[id]?.plans || []).length > 0);
+      .filter((id) => plansOf(claimable[id]).length > 0);
     if (!ids.length) { toast(t("m.noClaimableAccounts"), "warn"); return; }
     if (claimActive || claimAllRunning || refreshClaim.running) return;
     claimAllRunning = true;
@@ -339,7 +386,7 @@ const actions = {
     try {
       for (let i = 0; i < ids.length; i++) {
         const id = ids[i];
-        const plan = claimable[id].plans[0];
+        const plan = plansOf(claimable[id])[0];
         const name = state.accounts.find((a) => a.id === id)?.name || id;
         try {
           await invoke("claim_start", { id, planId: plan.plan_id });
@@ -358,6 +405,10 @@ const actions = {
       claimAllRunning = false;
       claimActive = false;
     }
+  },
+
+  async retryClaimPreview(id) {
+    enqueuePreview(id, { force: true });
   },
 
   async refreshClaim() {
@@ -391,15 +442,15 @@ const actions = {
         const id = ids[i];
         const name = state.accounts.find((a) => a.id === id)?.name || id;
         refreshClaim.done = i + 1;
-        claimable[id] = { plans: claimable[id]?.plans || [], busy: true };
+        const reqId = beginRefreshPreview(id);
         if (!uiLocked()) render();
         try {
           const r = await invoke("claim_refresh", { id });
-          claimable[id] = { plans: r.plans || [], err: null, busy: false };
+          resolveRefreshPreview(id, reqId, r.plans);
           if ((r.plans || []).length) okCount++;
           if (r.activationError) toast(t("m.refreshClaimAcctErr", { name, err: stripErr(r.activationError) }), "warn");
         } catch (e) {
-          claimable[id] = { plans: claimable[id]?.plans || [], err: String(e), busy: false };
+          failRefreshPreview(id, reqId, e);
           toast(t("m.refreshClaimAcctErr", { name, err: stripErr(e) }), "err");
         }
         scheduleNext(id);
@@ -467,7 +518,7 @@ async function autoClaimTick() {
     .map((a) => a.id)
     .filter((id) => (autoClaimCooldown[id] ?? 0) <= Date.now());
   if (!ids.length) {
-    if ((state.accounts || []).some((a) => (claimable[a.id]?.plans || []).length > 0)) {
+    if ((state.accounts || []).some((a) => plansOf(claimable[a.id]).length > 0)) {
       lastAutoRound = { at: Date.now(), claimed: 0, skipped: 0, cooldownAll: true };
     }
     return;
@@ -480,12 +531,12 @@ async function autoClaimTick() {
       if (!state?.auto_claim || autoAbortRequested) break;
       if (!(state.accounts || []).some((a) => a.id === id)) continue;
       let gotAny = false;
-      claimable[id] = { ...(claimable[id] || {}), busy: true };
+      const reqId = beginRefreshPreview(id);
       try {
         const r = await invoke("claim_refresh", { id });
-        claimable[id] = { plans: r.plans || [], err: null, busy: false };
+        resolveRefreshPreview(id, reqId, r.plans);
       } catch (e) {
-        claimable[id] = { plans: claimable[id]?.plans || [], err: String(e), busy: false };
+        failRefreshPreview(id, reqId, e);
         autoClaimCooldown[id] = Date.now() + AUTO_CLAIM_INTERVAL_MS;
         roundSkipped++;
         continue;
@@ -497,7 +548,7 @@ async function autoClaimTick() {
         if (autoAbortRequested) break;
         attempts++;
         progressed = false;
-        const plan = claimable[id]?.plans?.[0];
+        const plan = plansOf(claimable[id])[0];
         if (!plan) break;
         try {
           await invoke("claim_start", { id, planId: plan.plan_id, auto: true });
@@ -517,12 +568,12 @@ async function autoClaimTick() {
           break;
         }
         gotAny = true; roundClaimed++;
-        await awaitClaimPreviewFresh(id);
+        await loadClaimPreview(id);
         if (!uiLocked()) render();
         progressed = true;
         await new Promise((res) => setTimeout(res, 1200));
       }
-      if (!gotAny && (claimable[id]?.plans || []).length) roundSkipped++;
+      if (!gotAny && plansOf(claimable[id]).length) roundSkipped++;
       await new Promise((res) => setTimeout(res, AUTO_CLAIM_ACCT_GAP_MS));
     }
   } finally {
@@ -628,19 +679,51 @@ function grantLabel(plan) {
       period: t(`q.period.${g.period}`, {}) === `q.period.${g.period}` ? g.period : t(`q.period.${g.period}`, {}),
     });
   }
-  return (plan.grants || [])[0] || "";
+  return "";
 }
 function claimStripHtml(id) {
   const c = claimable[id];
-  const plan = c?.plans?.[0];
+  const plan = plansOf(c)[0];
+  if (c?.status === "error") {
+    return `
+    <div class="claim-strip err" role="status">
+      ${ic("alert", 14)}
+      <span class="claim-name">${esc(t("m.claimCheckErr"))}</span>
+      <span class="claim-grants" title="${esc(c.error || "")}">${esc(c.error || "")}</span>
+      <button class="btn-mini claim-retry" click="actions.retryClaimPreview('${id}')" title="${t("m.claimRetry")}">${t("m.claimRetry")}</button>
+    </div>`;
+  }
+  if (c?.status === "unknown") {
+    return `
+    <div class="claim-strip muted" role="status">
+      ${ic("gift", 14)}
+      <span class="claim-name">${esc(t("m.claimUnknown"))}</span>
+      <button class="btn-mini claim-retry" click="actions.retryClaimPreview('${id}')" title="${t("m.claimRetry")}">${t("m.claimRetry")}</button>
+    </div>`;
+  }
+  if (c?.status === "loading" && !plan) {
+    return `
+    <div class="claim-strip muted" role="status">
+      ${ic("gift", 14)}
+      <span class="claim-name">${esc(t("m.claimChecking"))}</span>
+    </div>`;
+  }
+  if (c?.status === "none") {
+    return `
+    <div class="claim-strip muted none" role="status">
+      <span class="claim-name">${esc(t("m.claimNone"))}</span>
+    </div>`;
+  }
   if (!plan) return "";
+  const stale = c?.status === "stale";
   const grants = grantLabel(plan);
   const label = plan.name || plan.plan_id;
   return `
-  <div class="claim-strip" title="${esc(plan.description || label)}">
+  <div class="claim-strip${stale ? " stale" : ""}" title="${esc(plan.description || label)}">
     ${ic("gift", 15)}
     <span class="claim-name">${esc(label)}</span>
     ${grants ? `<span class="claim-grants">${esc(grants)}</span>` : ""}
+    ${stale ? `<span class="claim-refreshing">${esc(t("m.claimChecking"))}</span>` : ""}
     <button class="btn-claim has-ic" click="actions.claim('${id}')" ${claimAllRunning || refreshClaim.running || claimActive || autoClaimRunning ? "disabled" : ""}>${ic("gift", 13)} ${t("btn.claim")}</button>
   </div>`;
 }
@@ -809,7 +892,7 @@ function render() {
        </div>`
     : rows;
 
-  const claimableCount = s.accounts.filter((a) => (claimable[a.id]?.plans || []).length > 0).length;
+  const claimableCount = s.accounts.filter((a) => plansOf(claimable[a.id]).length > 0).length;
 
   $app.innerHTML = `
     <header class="topbar">
@@ -876,7 +959,7 @@ listen("tray-action", (ev) => {
   const p = ev.payload || {};
   if (p.action === "capture" && p.ok) toast(t("m.toastSaved", { name: p.result.name }));
   else if (!p.ok && p.error) toast(p.error, "err");
-  refresh().then(() => { if (!uiLocked()) { render(); enrollAccounts(); } }).catch(() => {});
+  refresh().then(() => { if (!uiLocked()) { render(); enrollAccounts(); enqueueAllPreviews(); } }).catch(() => {});
 });
 
 listen("claim://result", (ev) => {
@@ -897,9 +980,7 @@ listen("claim://result", (ev) => {
   }
   if (p.accountId) {
     loadAcctQuota(p.accountId);
-    if (!autoClaimRunning) {
-      loadClaimPreview(p.accountId).then(() => { if (!uiLocked()) render(); });
-    }
+    enqueuePreview(p.accountId, { force: true });
     scheduleNext(p.accountId);
   }
 });
@@ -928,7 +1009,7 @@ listen("oauth://done", (ev) => {
     return;
   }
   toast(t("m.oauthOk", { name: p.name }), "ok", t("m.oauthOkDetail"));
-  refresh().then(() => { if (!uiLocked()) { render(); enrollAccounts(); } }).catch(() => {});
+  refresh().then(() => { if (!uiLocked()) { render(); enrollAccounts(); enqueueAllPreviews(); } }).catch(() => {});
 });
 
 listen("state-changed", () => {
@@ -955,9 +1036,14 @@ function pokeAccount(id) { if (id) quotaDue[id] = Date.now(); }
 async function sweepTick() {
   if (ticking) return;
   enrollAccounts();
+  for (const a of state?.accounts || []) enqueuePreview(a.id);
   const now = Date.now();
   const due = (state?.accounts || []).find(
-    (a) => (quotaDue[a.id] ?? Infinity) <= now && !acctQuota[a.id]?.busy && !claimable[a.id]?.busy,
+    (a) => (quotaDue[a.id] ?? Infinity) <= now
+      && !acctQuota[a.id]?.busy
+      && !previewQueue.isBusy(a.id)
+      && claimable[a.id]?.status !== "loading"
+      && claimable[a.id]?.status !== "stale",
   );
   if (!due) return;
   ticking = true;
@@ -979,6 +1065,7 @@ async function sweepTick() {
     await invoke("reveal_main");
     setTimeout(dismissSplash, 350);
     enrollAccounts();
+    enqueueAllPreviews();
     sweepTick();
     setInterval(() => {
       invoke("get_state").then((s) => { state = s; if (s?.language) init(s.language); enrollAccounts(); if (!uiLocked()) render(); }).catch(() => {});
