@@ -16,7 +16,7 @@ export default defineConfig({
   build: {
     target: "chrome105",
     sourcemap: false,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: resolve(root, "index.html"),
         settings: resolve(root, "settings.html"),

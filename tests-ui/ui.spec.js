@@ -2,6 +2,21 @@ import { test, expect } from "@playwright/test";
 
 // Все сценарии — на обезличенном моке (?mock=..., работает только в DEV-сборке).
 
+const browserErrors = new WeakMap();
+
+test.beforeEach(async ({ page }) => {
+  const errors = [];
+  browserErrors.set(page, errors);
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  expect(browserErrors.get(page) || []).toEqual([]);
+});
+
 async function open(page, query, { width = 680, height = 820 } = {}) {
   await page.setViewportSize({ width, height });
   await page.goto(`/?${query}`);

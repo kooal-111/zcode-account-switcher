@@ -39,9 +39,14 @@ pub struct CaptchaConfig {
     pub skip_model_request: bool,
 }
 
+pub fn requires_request_verification(config: &CaptchaConfig) -> bool {
+    config.enabled && !config.skip_model_request
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimOutcome {
+    pub claim_id: String,
     pub account_id: String,
     pub account_name: String,
     pub plan_name: String,
@@ -92,6 +97,7 @@ fn claim_error(code: i64, body: &Value) -> ClaimError {
 }
 
 pub fn failure_payload(
+    claim_id: &str,
     account_id: &str,
     account_name: &str,
     plan_name: &str,
@@ -99,6 +105,7 @@ pub fn failure_payload(
 ) -> Value {
     serde_json::json!({
         "ok": false,
+        "claimId": claim_id,
         "accountId": account_id,
         "accountName": account_name,
         "planName": plan_name,
@@ -291,12 +298,17 @@ fn preview_once(url: &str, token: &str, mid: Option<String>) -> Result<Vec<Claim
             Err(e) => return Err(http_err(&crate::i18n::tr("err.claim.preview_req"), e)),
         }
     }
-    if dump {
-        // Диагностика: печатается только тело ответа (данные планов, без токенов).
-        eprintln!("[zsw] preview response: {resp_body}");
-    }
     let resp = resp_body;
     let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
+    if dump {
+        // Не печатаем ответ целиком: сервер может со временем добавить в него
+        // персональные поля. Для диагностики достаточно code и plans.
+        let safe = serde_json::json!({
+            "code": response_code(&v),
+            "plans": v.pointer("/data/plans").cloned().unwrap_or(Value::Null),
+        });
+        eprintln!("[zsw] preview response: {safe}");
+    }
     let code = response_code(&v).unwrap_or(-1);
     if code != 0 {
         return Err(failure_message(code, &v));
@@ -320,18 +332,17 @@ pub fn submit_claim(
     captcha_region: Option<&str>,
     device_mid: Option<String>,
 ) -> Result<Value, ClaimError> {
-    if captcha_param.trim().is_empty() {
-        return Err(crate::i18n::tr("err.claim.no_captcha").into());
-    }
     let secret = zcrypto::default_secret(home);
     let token = claim_token(creds, config, &secret)?;
     let mut req = agent().post(BILLING_CLAIM_URL);
     for (k, v) in quota::zai_billing_headers_with_mid(&token, device_mid) {
         req = req.set(&k, &v);
     }
-    req = req.set("X-Aliyun-Captcha-Verify-Param", captcha_param.trim());
-    if let Some(r) = captcha_region.filter(|r| !r.trim().is_empty()) {
-        req = req.set("X-Aliyun-Captcha-Verify-Region", r.trim());
+    if !captcha_param.trim().is_empty() {
+        req = req.set("X-Aliyun-Captcha-Verify-Param", captcha_param.trim());
+        if let Some(r) = captcha_region.filter(|r| !r.trim().is_empty()) {
+            req = req.set("X-Aliyun-Captcha-Verify-Region", r.trim());
+        }
     }
     let resp = req
         .send_json(serde_json::json!({ "plan_id": plan_id }))
@@ -647,12 +658,24 @@ mod tests {
         let cfg = parse_captcha_config(&fixture("captcha_enabled_camel.json"));
         assert!(cfg.enabled);
         assert!(cfg.skip_model_request);
+        assert!(!requires_request_verification(&cfg));
         assert_eq!(cfg.scene_id, "scene-123");
         let cfg = parse_captcha_config(&fixture("captcha_skip_snake.json"));
         assert!(cfg.skip_model_request);
+        assert!(!requires_request_verification(&cfg));
         let cfg = parse_captcha_config(&fixture("captcha_disabled.json"));
         assert!(!cfg.enabled);
         assert!(!cfg.skip_model_request);
+        assert!(!requires_request_verification(&cfg));
+
+        let required = CaptchaConfig {
+            enabled: true,
+            region: "cn".into(),
+            prefix: "prefix".into(),
+            scene_id: "scene".into(),
+            skip_model_request: false,
+        };
+        assert!(requires_request_verification(&required));
     }
 
     #[test]

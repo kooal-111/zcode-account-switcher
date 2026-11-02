@@ -44,7 +44,7 @@ document.addEventListener("securitypolicyviolation", (e) => {
   detail(t("c.cspBlocked", { directive: e.violatedDirective, uri: String(e.blockedURI).slice(0, 70) }));
 });
 
-const notifyStuck = () => { emit("captcha://interactive").catch(() => {}); };
+const notifyStuck = () => { emit("captcha://interactive", { claimId }).catch(() => {}); };
 
 // Закрытие окна (крестик/Alt+F4) отменяет ровно свою попытку claim.
 window.addEventListener("beforeunload", () => {
@@ -77,6 +77,33 @@ function clearRetry() {
   delete $btn.dataset.retry;
   $btn.hidden = true;
   $btn.textContent = t("c.btn");
+}
+
+function submitClaim(param = "") {
+  if (submitted || (param && !param.trim())) return;
+  submitted = true;
+  clearTimeout(tracelessTimer);
+  setState("submitting", "run");
+  status(t("c.passed"));
+  let timeoutId;
+  const req = invoke("claim_captcha_submit", { claimId, param, region });
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(t("c.timedOut"))), SUBMIT_TIMEOUT_MS);
+  });
+  Promise.race([req, timeout])
+    .then(() => {
+      // Успех/ошибка приходят событием claim://result; окно закрывает backend.
+      setState("success", "ok");
+    })
+    .catch((e) => {
+      // После отправки неизвестно, дошёл ли запрос до сервера. Повтор той же
+      // CAPTCHA мог бы сделать второй claim, поэтому предлагаем начать заново.
+      setState("fatal_error", "err");
+      status(t("c.claimReqFail"), "err");
+      detail(stripErr(e));
+      notifyStuck();
+    })
+    .finally(() => clearTimeout(timeoutId));
 }
 
 async function run() {
@@ -114,7 +141,15 @@ async function run() {
     showRetry();
     return;
   }
-  if (!cfg.enabled || !cfg.scene_id) {
+  // В 3.17.1 skipModelRequest=true (или enabled=false) означает, что
+  // request verification для start-plan не требуется. Backend повторно
+  // проверит свежий серверный конфиг перед запросом без CAPTCHA-заголовка.
+  if (!cfg.enabled || cfg.skip_model_request) {
+    region = cfg.region || null;
+    submitClaim("");
+    return;
+  }
+  if (!cfg.scene_id) {
     setState("fatal_error", "err");
     status(t("c.cfgUnavailable"), "err");
     detail(t("c.cfgUnavailableDetail"));
@@ -145,30 +180,6 @@ async function run() {
 
   window.AliyunCaptchaConfig = { region: cfg.region, prefix: cfg.prefix };
 
-  const submit = (param) => {
-    if (submitted || !param || !param.trim()) return;
-    submitted = true;
-    clearTimeout(tracelessTimer);
-    setState("submitting", "run");
-    status(t("c.passed"));
-    const req = invoke("claim_captcha_submit", { claimId, param, region });
-    const timeout = new Promise((_, rej) =>
-      setTimeout(() => rej(new Error(t("c.timedOut"))), SUBMIT_TIMEOUT_MS),
-    );
-    Promise.race([req, timeout])
-      .then(() => {
-        // Успех/ошибка уже приходят событием claim://result; окно закроет бэкенд.
-        setState("success", "ok");
-      })
-      .catch((e) => {
-        setState("retryable_error", "err");
-        status(t("c.claimReqFail"), "err");
-        detail(stripErr(e));
-        notifyStuck();
-        showRetry();
-      });
-  };
-
   const interactive = (why) => {
     notifyStuck();
     clearTimeout(tracelessTimer);
@@ -189,11 +200,6 @@ async function run() {
       button: "#cap-btn",
       getInstance: (instance) => {
         if (canceled || submitted) return;
-        // Сервер просит пропустить невидимую проверку — сразу ручной режим.
-        if (cfg.skip_model_request) {
-          interactive("skip_model_request");
-          return;
-        }
         if (typeof instance.startTracelessVerification === "function") {
           setState("traceless", "run");
           instance.startTracelessVerification();
@@ -202,7 +208,7 @@ async function run() {
           interactive();
         }
       },
-      success: (param) => submit(typeof param === "string" ? param : param?.captchaVerifyParam),
+      success: (param) => submitClaim(typeof param === "string" ? param : param?.captchaVerifyParam),
       fail: (p) => interactive(p),
       onError: (p) => interactive(p),
     });

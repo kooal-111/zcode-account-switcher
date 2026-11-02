@@ -10,7 +10,10 @@ mod store;
 mod zcrypto;
 
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use store::*;
 use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -34,6 +37,16 @@ struct PendingClaim {
 }
 
 static PENDING_CLAIM: Mutex<Option<PendingClaim>> = Mutex::new(None);
+static CLAIM_BUSY: AtomicBool = AtomicBool::new(false);
+
+fn try_reserve_claim(flag: &AtomicBool) -> bool {
+    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+fn release_claim() {
+    CLAIM_BUSY.store(false, Ordering::Release);
+}
 
 fn pending_guard() -> std::sync::MutexGuard<'static, Option<PendingClaim>> {
     match PENDING_CLAIM.lock() {
@@ -42,13 +55,21 @@ fn pending_guard() -> std::sync::MutexGuard<'static, Option<PendingClaim>> {
     }
 }
 
-// None (старые вызовы) отменяет/подтверждает любую попытку; Some(id) — только совпадающую.
-fn pending_matches(pending: &Option<PendingClaim>, claim_id: Option<&str>) -> bool {
-    match (pending.as_ref(), claim_id) {
-        (None, _) => false,
-        (Some(_), None) => true,
-        (Some(p), Some(cid)) => p.claim_id == cid,
+fn pending_matches(pending: &Option<PendingClaim>, claim_id: &str) -> bool {
+    pending
+        .as_ref()
+        .map(|p| p.claim_id == claim_id)
+        .unwrap_or(false)
+}
+
+fn take_pending_claim(pending: &mut Option<PendingClaim>, claim_id: Option<&str>) -> bool {
+    let matches = claim_id
+        .map(|id| pending_matches(pending, id))
+        .unwrap_or_else(|| pending.is_some());
+    if matches {
+        pending.take();
     }
+    matches
 }
 
 fn store_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -326,6 +347,21 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
         let mid = store::ensure_virtual_device_mid(&paths, &id)?;
         let acc = load_account(&paths, &id)?;
         let resolution = screen_resolution(&app);
+        // Сначала выполняем read-only preview. Если предложение уже доступно,
+        // activation-телеметрия не нужна вообще.
+        let initial_plans = claim::preview_plans(
+            &paths.home,
+            &acc.credentials,
+            acc.config.as_ref(),
+            Some(mid.clone()),
+        )?;
+        if !initial_plans.is_empty() {
+            return Ok(ClaimRefreshResult {
+                plans: initial_plans,
+                activated: false,
+                activation_error: None,
+            });
+        }
         // Активация не чаще одного раза в день на (аккаунт, deviceMid, версия клиента);
         // сам deviceMid в кэш не пишется — только sha256-ключ.
         let (activated, activation_error) =
@@ -349,12 +385,17 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
                 // тост на каждый refresh был бы спамом при множестве аккаунтов.
                 None => (false, None),
             };
-        let plans = claim::preview_plans(
-            &paths.home,
-            &acc.credentials,
-            acc.config.as_ref(),
-            Some(mid),
-        )?;
+        // Повторный preview имеет смысл только сразу после успешной activation.
+        let plans = if activated {
+            claim::preview_plans(
+                &paths.home,
+                &acc.credentials,
+                acc.config.as_ref(),
+                Some(mid),
+            )?
+        } else {
+            initial_plans
+        };
         Ok(ClaimRefreshResult {
             plans,
             activated,
@@ -372,10 +413,13 @@ async fn claim_start(
     plan_id: String,
     auto: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    if pending_guard().is_some() {
+    // Резервируем слот до первого await. Простая проверка PENDING_CLAIM здесь
+    // допускала гонку: два одновременных start оба видели None и второй
+    // перезаписывал подготовленный claim первого.
+    if !try_reserve_claim(&CLAIM_BUSY) {
         return Err(i18n::tr("err.claim.pending"));
     }
-    let prepared = tauri::async_runtime::spawn_blocking(
+    let joined = tauri::async_runtime::spawn_blocking(
         move || -> Result<(store::Account, String, claim::ClaimPlan), String> {
             let paths = Paths::detect();
             let mid = store::ensure_virtual_device_mid(&paths, &id)?;
@@ -394,9 +438,21 @@ async fn claim_start(
             Ok((acc, mid, plan))
         },
     )
-    .await
-    .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?;
-    let (acc, mid, plan) = prepared?;
+    .await;
+    let prepared = match joined {
+        Ok(result) => result,
+        Err(e) => {
+            release_claim();
+            return Err(i18n::trf("err.task.join", &[("e", &e.to_string())]));
+        }
+    };
+    let (acc, mid, plan) = match prepared {
+        Ok(value) => value,
+        Err(e) => {
+            release_claim();
+            return Err(e);
+        }
+    };
     let display = if plan.name.is_empty() {
         plan.plan_id.clone()
     } else {
@@ -414,7 +470,14 @@ async fn claim_start(
         config: acc.config,
         device_mid: mid,
     });
-    open_captcha_window(&app, auto.unwrap_or(false))?;
+    if let Err(e) = open_captcha_window(&app, auto.unwrap_or(false)) {
+        let mut pending = pending_guard();
+        if pending_matches(&pending, &claim_id) {
+            *pending = None;
+        }
+        release_claim();
+        return Err(e);
+    }
     Ok(json!({ "account": acc.name, "plan": display, "claimId": claim_id }))
 }
 
@@ -442,14 +505,14 @@ async fn claim_captcha_config() -> Result<claim::CaptchaConfig, String> {
 #[tauri::command]
 async fn claim_captcha_submit(
     app: AppHandle,
-    claim_id: Option<String>,
+    claim_id: String,
     param: String,
     region: Option<String>,
 ) -> Result<serde_json::Value, String> {
     // Валидация claim_id: нельзя сдать капчу от чужой/отменённой попытки.
     let pending = {
         let mut g = pending_guard();
-        let matches = pending_matches(&g, claim_id.as_deref());
+        let matches = pending_matches(&g, &claim_id);
         let exists = g.is_some();
         if matches {
             g.take().unwrap()
@@ -462,8 +525,17 @@ async fn claim_captcha_submit(
     let account_id = pending.account_id.clone();
     let account_name = pending.account_name.clone();
     let plan_name = pending.plan_name.clone();
+    let completed_claim_id = pending.claim_id.clone();
     let paths = Paths::detect();
     let res = tauri::async_runtime::spawn_blocking(move || {
+        // Пустой CAPTCHA-параметр разрешён только если свежий серверный
+        // конфиг прямо говорит, что verification отключена/пропускается.
+        if param.trim().is_empty() {
+            let cfg = claim::fetch_captcha_config().map_err(claim::ClaimError::from)?;
+            if claim::requires_request_verification(&cfg) {
+                return Err(claim::ClaimError::from(i18n::tr("err.claim.no_captcha")));
+            }
+        }
         claim::submit_claim(
             &paths.home,
             &pending.credentials,
@@ -474,9 +546,17 @@ async fn claim_captcha_submit(
             Some(pending.device_mid),
         )
     })
-    .await
-    .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?;
+    .await;
+    let res = match res {
+        Ok(result) => result,
+        Err(e) => {
+            close_captcha_window(&app);
+            release_claim();
+            return Err(i18n::trf("err.task.join", &[("e", &e.to_string())]));
+        }
+    };
     close_captcha_window(&app);
+    release_claim();
     let payload = match res {
         Ok(v) => {
             let ms = |k: &str| -> Option<i64> {
@@ -489,6 +569,7 @@ async fn claim_captcha_submit(
                 .and_then(|x| x.as_i64())
                 .map(|s| s * 1000);
             let outcome = claim::ClaimOutcome {
+                claim_id: completed_claim_id.clone(),
                 account_id,
                 account_name,
                 plan_name,
@@ -501,7 +582,13 @@ async fn claim_captcha_submit(
             p
         }
         Err(e) => {
-            let p = claim::failure_payload(&account_id, &account_name, &plan_name, &e);
+            let p = claim::failure_payload(
+                &completed_claim_id,
+                &account_id,
+                &account_name,
+                &plan_name,
+                &e,
+            );
             let _ = app.emit("claim://result", &p);
             return Ok(p);
         }
@@ -510,20 +597,16 @@ async fn claim_captcha_submit(
 }
 
 #[tauri::command]
-async fn claim_cancel(app: AppHandle, claim_id: Option<String>) -> Result<(), String> {
-    // None (старые вызовы/таймауты) отменяет любую попытку; Some(id) — только свою,
-    // чужие попытки не трогаем (чтобы не убить активную капчу).
+async fn claim_cancel(app: AppHandle, claim_id: String) -> Result<(), String> {
+    // Отменяем только конкретную попытку; старый таймаут не может затронуть
+    // более новый claim.
     let cancelled = {
         let mut g = pending_guard();
-        if pending_matches(&g, claim_id.as_deref()) {
-            *g = None;
-            true
-        } else {
-            false
-        }
+        take_pending_claim(&mut g, Some(&claim_id))
     };
     if cancelled {
         close_captcha_window(&app);
+        release_claim();
     }
     Ok(())
 }
@@ -1490,7 +1573,13 @@ pub fn run() {
                     }
                 }
                 if window.label() == "captcha" {
-                    *pending_guard() = None;
+                    // После submit pending уже извлечён, но сетевой запрос ещё
+                    // может выполняться. Закрытие окна не должно в этот момент
+                    // освобождать слот и разрешать второй параллельный claim.
+                    let cancelled = take_pending_claim(&mut pending_guard(), None);
+                    if cancelled {
+                        release_claim();
+                    }
                 }
             }
         })
@@ -1505,11 +1594,12 @@ pub fn run() {
                 let claim_id = serde_json::from_str::<Value>(raw)
                     .ok()
                     .and_then(|v| v.get("claimId").and_then(|c| c.as_str()).map(String::from));
-                let mut g = pending_guard();
-                match (g.as_ref(), claim_id) {
-                    (Some(p), Some(cid)) if p.claim_id == cid => *g = None,
-                    (Some(_), None) => *g = None,
-                    _ => {}
+                let cancelled = {
+                    let mut g = pending_guard();
+                    take_pending_claim(&mut g, claim_id.as_deref())
+                };
+                if cancelled {
+                    release_claim();
                 }
             });
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
@@ -1562,25 +1652,44 @@ mod tests {
 
     #[test]
     fn pending_claim_id_validation() {
-        let p = Some(dummy_pending("id-1"));
-        assert!(pending_matches(&p, Some("id-1")));
-        assert!(!pending_matches(&p, Some("id-2")));
-        assert!(
-            pending_matches(&p, None),
-            "None (старый вызов) матчит любую попытку"
-        );
-        assert!(!pending_matches(&None, Some("id-1")));
-        assert!(!pending_matches(&None, None));
+        let mut p = Some(dummy_pending("id-1"));
+        assert!(pending_matches(&p, "id-1"));
+        assert!(!pending_matches(&p, "id-2"));
+        assert!(!pending_matches(&None, "id-1"));
+        assert!(!take_pending_claim(&mut p, Some("id-2")));
+        assert!(p.is_some());
+        assert!(take_pending_claim(&mut p, Some("id-1")));
+        assert!(p.is_none());
+
+        // Во время отправки pending уже извлечён. Закрытие окна не должно
+        // считаться отменой и освобождать слот раньше завершения запроса.
+        assert!(!take_pending_claim(&mut p, None));
     }
 
     #[test]
-    fn concurrent_claim_rejected_by_guard_semantics() {
-        // claim_start обязан отклонять новую попытку при активной (pending занят).
-        let p = Some(dummy_pending("id-1"));
-        let busy = p.is_some();
-        assert!(
-            busy,
-            "вторая attempt_start должна получить err.claim.pending"
+    fn concurrent_claim_reservation_is_atomic() {
+        use std::sync::{Arc, Barrier};
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(Barrier::new(12));
+        let threads: Vec<_> = (0..12)
+            .map(|_| {
+                let flag = Arc::clone(&flag);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    try_reserve_claim(&flag)
+                })
+            })
+            .collect();
+        let winners = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("reservation thread"))
+            .filter(|reserved| *reserved)
+            .count();
+        assert_eq!(
+            winners, 1,
+            "ровно один одновременный start резервирует слот"
         );
     }
 
@@ -1591,7 +1700,7 @@ mod tests {
             message: "msg".into(),
             next_at: None,
         };
-        let payload = claim::failure_payload("acc-1", "acc", "plan", &err);
+        let payload = claim::failure_payload("claim-1", "acc-1", "acc", "plan", &err);
         let raw = serde_json::to_string(&payload).unwrap();
         assert!(raw.contains("acc-1"));
         assert!(!raw.to_lowercase().contains("bearer"));
