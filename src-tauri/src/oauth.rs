@@ -546,8 +546,8 @@ pub fn extract_access_token(provider: &str, raw: &Value) -> Option<String> {
     };
     let data = raw.get("data")?;
     match provider {
-        "bigmodel" => data.get("bigmodel").and_then(&pick).or_else(|| pick(data)),
-        "zai" => data.get("zai").and_then(&pick),
+        "bigmodel" => data.get("bigmodel").and_then(pick).or_else(|| pick(data)),
+        "zai" => data.get("zai").and_then(pick),
         _ => None,
     }
 }
