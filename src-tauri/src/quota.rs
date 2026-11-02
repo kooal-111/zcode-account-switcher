@@ -1,4 +1,3 @@
-
 use crate::zcrypto;
 use serde_json::Value;
 use std::path::Path;
@@ -57,8 +56,12 @@ pub(crate) fn device_mid() -> Option<String> {
     CACHE
         .get_or_init(|| {
             let home = crate::store::pick_home(
-                std::env::var("ZCODE_SWITCH_HOME").ok().map(std::path::PathBuf::from),
-                std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from),
+                std::env::var("ZCODE_SWITCH_HOME")
+                    .ok()
+                    .map(std::path::PathBuf::from),
+                std::env::var("USERPROFILE")
+                    .ok()
+                    .map(std::path::PathBuf::from),
                 std::env::var("HOME").ok().map(std::path::PathBuf::from),
             );
             let p = crate::store::resolve_data_root(&home)
@@ -68,7 +71,11 @@ pub(crate) fn device_mid() -> Option<String> {
             std::fs::read_to_string(p)
                 .ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .and_then(|v| v.get("deviceMid").and_then(|m| m.as_str()).map(String::from))
+                .and_then(|v| {
+                    v.get("deviceMid")
+                        .and_then(|m| m.as_str())
+                        .map(String::from)
+                })
         })
         .clone()
 }
@@ -79,12 +86,21 @@ pub(crate) fn os_version() -> Option<String> {
     CACHE
         .get_or_init(|| {
             let out = no_window("reg")
-                .args(["query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "/v", "CurrentBuildNumber"])
+                .args([
+                    "query",
+                    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+                    "/v",
+                    "CurrentBuildNumber",
+                ])
                 .output()
                 .ok()?;
             let txt = String::from_utf8_lossy(&out.stdout);
-            let build = txt.lines().find(|l| l.contains("CurrentBuildNumber"))?
-                .rsplit(' ').find(|t| !t.is_empty())?.to_string();
+            let build = txt
+                .lines()
+                .find(|l| l.contains("CurrentBuildNumber"))?
+                .rsplit(' ')
+                .find(|t| !t.is_empty())?
+                .to_string();
             Some(format!("10.0.{build}"))
         })
         .clone()
@@ -154,9 +170,17 @@ pub(crate) fn zcode_app_version() -> String {
                         continue;
                     }
                     if let Some(rest) = l.strip_prefix("DisplayName") {
-                        name = rest.trim_start().trim_start_matches("REG_SZ").trim().to_string();
+                        name = rest
+                            .trim_start()
+                            .trim_start_matches("REG_SZ")
+                            .trim()
+                            .to_string();
                     } else if let Some(rest) = l.strip_prefix("DisplayVersion") {
-                        ver = rest.trim_start().trim_start_matches("REG_SZ").trim().to_string();
+                        ver = rest
+                            .trim_start()
+                            .trim_start_matches("REG_SZ")
+                            .trim()
+                            .to_string();
                     }
                 }
                 if is_zcode_display_name(&name) && !ver.is_empty() {
@@ -186,7 +210,10 @@ pub(crate) fn zai_billing_headers(token: &str) -> Vec<(String, String)> {
     zai_billing_headers_with_mid(token, device_mid())
 }
 
-pub(crate) fn zai_billing_headers_with_mid(token: &str, mid: Option<String>) -> Vec<(String, String)> {
+pub(crate) fn zai_billing_headers_with_mid(
+    token: &str,
+    mid: Option<String>,
+) -> Vec<(String, String)> {
     zai_headers_with_version(zcode_app_version(), token, mid)
 }
 
@@ -196,7 +223,11 @@ pub(crate) fn zai_oauth_headers_with_mid(token: &str, mid: Option<String>) -> OA
     OAuthFlowHeaders(zai_headers_with_version(zcode_app_version(), token, mid))
 }
 
-fn zai_headers_with_version(ver: String, token: &str, mid: Option<String>) -> Vec<(String, String)> {
+fn zai_headers_with_version(
+    ver: String,
+    token: &str,
+    mid: Option<String>,
+) -> Vec<(String, String)> {
     let mut h: Vec<(String, String)> = vec![
         ("User-Agent".into(), format!("ZCode/{ver}")),
         ("HTTP-Referer".into(), ZCODE_ORIGIN.into()),
@@ -222,7 +253,10 @@ fn zai_headers_with_version(ver: String, token: &str, mid: Option<String>) -> Ve
 fn bigmodel_headers(token: &str) -> Vec<(String, String)> {
     vec![
         ("Authorization".into(), format!("Bearer {token}")),
-        ("User-Agent".into(), format!("ZCode/{}", zcode_app_version())),
+        (
+            "User-Agent".into(),
+            format!("ZCode/{}", zcode_app_version()),
+        ),
         ("x-request-id".into(), uuid::Uuid::new_v4().to_string()),
     ]
 }
@@ -299,17 +333,30 @@ fn looks_like_token(v: &str) -> bool {
 
 fn coding_plan_api_keys(config: Option<&Value>) -> Vec<String> {
     let mut keys = vec![];
-    let providers = match config.and_then(|c| c.get("provider")).and_then(|p| p.as_object()) {
+    let providers = match config
+        .and_then(|c| c.get("provider"))
+        .and_then(|p| p.as_object())
+    {
         Some(p) => p,
         None => return keys,
     };
     let mut ordered: Vec<(&String, &Value)> = providers.iter().collect();
-    ordered.sort_by_key(|(_, p)| if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) { 0 } else { 1 });
+    ordered.sort_by_key(|(_, p)| {
+        if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) {
+            0
+        } else {
+            1
+        }
+    });
     for (id, p) in ordered {
         if !id.contains("coding-plan") {
             continue;
         }
-        if let Some(k) = p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str()) {
+        if let Some(k) = p
+            .get("options")
+            .and_then(|o| o.get("apiKey"))
+            .and_then(|k| k.as_str())
+        {
             if !k.starts_with("enc:") && looks_like_token(k) && !keys.contains(&k.to_string()) {
                 keys.push(k.to_string());
             }
@@ -319,18 +366,33 @@ fn coding_plan_api_keys(config: Option<&Value>) -> Vec<String> {
 }
 
 fn coding_plan_keys_from_creds(creds: &Value, secret: &str) -> Vec<String> {
-    let Some(map) = creds.as_object() else { return vec![] };
+    let Some(map) = creds.as_object() else {
+        return vec![];
+    };
     let mut out: Vec<String> = vec![];
     for (k, v) in map {
-        if !k.starts_with("account-provider:") || !k.ends_with(":api-key") { continue; }
-        if !k.contains("coding-plan") { continue; }
-        let Some(p) = v.as_str().and_then(|v| safe_decrypt(Some(v), secret)) else { continue };
-        if looks_like_token(&p) && !out.contains(&p) { out.push(p); }
+        if !k.starts_with("account-provider:") || !k.ends_with(":api-key") {
+            continue;
+        }
+        if !k.contains("coding-plan") {
+            continue;
+        }
+        let Some(p) = v.as_str().and_then(|v| safe_decrypt(Some(v), secret)) else {
+            continue;
+        };
+        if looks_like_token(&p) && !out.contains(&p) {
+            out.push(p);
+        }
     }
     out
 }
 
-pub fn candidate_tokens(creds: &Value, config: Option<&Value>, secret: &str, new_gen: bool) -> Vec<String> {
+pub fn candidate_tokens(
+    creds: &Value,
+    config: Option<&Value>,
+    secret: &str,
+    new_gen: bool,
+) -> Vec<String> {
     let mut tokens: Vec<String> = vec![];
     let add = |plain: Option<String>, tokens: &mut Vec<String>| {
         if let Some(p) = plain {
@@ -355,7 +417,9 @@ pub fn candidate_tokens(creds: &Value, config: Option<&Value>, secret: &str, new
     .unwrap_or_else(|| "zai".into());
     let map = creds.as_object();
     add(
-        map.and_then(|m| m.get("zcodejwttoken")).and_then(|v| v.as_str()).and_then(|v| safe_decrypt(Some(v), secret)),
+        map.and_then(|m| m.get("zcodejwttoken"))
+            .and_then(|v| v.as_str())
+            .and_then(|v| safe_decrypt(Some(v), secret)),
         &mut tokens,
     );
     for key in [
@@ -364,7 +428,9 @@ pub fn candidate_tokens(creds: &Value, config: Option<&Value>, secret: &str, new
         "oauth:zai:access_token".to_string(),
     ] {
         add(
-            map.and_then(|m| m.get(&key)).and_then(|v| v.as_str()).and_then(|v| safe_decrypt(Some(v), secret)),
+            map.and_then(|m| m.get(&key))
+                .and_then(|v| v.as_str())
+                .and_then(|v| safe_decrypt(Some(v), secret)),
             &mut tokens,
         );
     }
@@ -388,7 +454,11 @@ fn http_get_json(url: &str, token: &str, retry_429: bool) -> Result<Value, Strin
         bigmodel_headers(token)
     };
     let mut last_err: Option<String> = None;
-    let mut backoff: std::slice::Iter<'_, u64> = if retry_429 { retry_delays.iter() } else { [].iter() };
+    let mut backoff: std::slice::Iter<'_, u64> = if retry_429 {
+        retry_delays.iter()
+    } else {
+        [].iter()
+    };
     loop {
         let mut req = agent.get(url);
         for (k, v) in &headers {
@@ -397,7 +467,9 @@ fn http_get_json(url: &str, token: &str, retry_429: bool) -> Result<Value, Strin
         let resp = req.call();
         match resp {
             Ok(r) => {
-                let text = r.into_string().map_err(|e| crate::i18n::trf("err.http.read", &[("e", &e.to_string())]))?;
+                let text = r
+                    .into_string()
+                    .map_err(|e| crate::i18n::trf("err.http.read", &[("e", &e.to_string())]))?;
                 return Ok(if text.is_empty() {
                     Value::Null
                 } else {
@@ -418,16 +490,31 @@ fn http_get_json(url: &str, token: &str, retry_429: bool) -> Result<Value, Strin
                             sleep(Duration::from_millis(*d));
                             continue;
                         }
-                        None => return Err(last_err.unwrap_or_else(|| crate::i18n::tr("err.quota.http429"))),
+                        None => {
+                            return Err(
+                                last_err.unwrap_or_else(|| crate::i18n::tr("err.quota.http429"))
+                            )
+                        }
                     }
                 }
                 if code == 401 || code == 403 {
-                    return Err(crate::i18n::trf("err.token.http401", &[("code", &code.to_string())]));
+                    return Err(crate::i18n::trf(
+                        "err.token.http401",
+                        &[("code", &code.to_string())],
+                    ));
                 }
-                let msg = serde_json::from_str::<Value>(&body)
-                    .ok()
-                    .and_then(|v| ["message", "msg", "error"].iter().find_map(|k| v.get(k).and_then(|x| x.as_str()).map(String::from)));
-                return Err(crate::i18n::trf("err.quota.http", &[("code", &code.to_string()), ("msg", &msg.unwrap_or_default())]));
+                let msg = serde_json::from_str::<Value>(&body).ok().and_then(|v| {
+                    ["message", "msg", "error"]
+                        .iter()
+                        .find_map(|k| v.get(k).and_then(|x| x.as_str()).map(String::from))
+                });
+                return Err(crate::i18n::trf(
+                    "err.quota.http",
+                    &[
+                        ("code", &code.to_string()),
+                        ("msg", &msg.unwrap_or_default()),
+                    ],
+                ));
             }
             Err(e) => return Err(crate::i18n::trf("err.network", &[("e", &e.to_string())])),
         }
@@ -534,7 +621,9 @@ pub fn query_quota(tokens: &[String]) -> Result<QuotaOverview, String> {
         }
         return Err(crate::i18n::tr("err.token.expired"));
     }
-    Err(first_business.or(last_err).unwrap_or_else(|| crate::i18n::tr("err.quota.fail")))
+    Err(first_business
+        .or(last_err)
+        .unwrap_or_else(|| crate::i18n::tr("err.quota.fail")))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -547,7 +636,11 @@ pub(crate) fn is_no_plan_message(msg: &str) -> bool {
     msg.contains("不存在coding plan") || msg.contains("没有资格")
 }
 
-pub(crate) fn zai_billing_token(creds: &Value, config: Option<&Value>, secret: &str) -> Option<String> {
+pub(crate) fn zai_billing_token(
+    creds: &Value,
+    config: Option<&Value>,
+    secret: &str,
+) -> Option<String> {
     let jwt = safe_decrypt(creds.get("zcodejwttoken").and_then(|v| v.as_str()), secret);
     let active = safe_decrypt(
         creds.get("oauth:active_provider").and_then(|v| v.as_str()),
@@ -563,10 +656,20 @@ pub(crate) fn zai_billing_token(creds: &Value, config: Option<&Value>, secret: &
     }
     let providers = config?.get("provider")?.as_object()?;
     let mut ordered: Vec<(&String, &Value)> = providers.iter().collect();
-    ordered.sort_by_key(|(_, p)| if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) { 0 } else { 1 });
+    ordered.sort_by_key(|(_, p)| {
+        if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) {
+            0
+        } else {
+            1
+        }
+    });
     for (id, p) in ordered {
         if id.contains("start-plan") {
-            if let Some(k) = p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str()) {
+            if let Some(k) = p
+                .get("options")
+                .and_then(|o| o.get("apiKey"))
+                .and_then(|k| k.as_str())
+            {
                 if !k.starts_with("enc:") && looks_like_token(k) {
                     return Some(k.to_string());
                 }
@@ -577,7 +680,15 @@ pub(crate) fn zai_billing_token(creds: &Value, config: Option<&Value>, secret: &
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum BizErrFamily { Auth, QuotaExhausted, RateLimited, SecurityReject, Param, Server, Unknown }
+pub(crate) enum BizErrFamily {
+    Auth,
+    QuotaExhausted,
+    RateLimited,
+    SecurityReject,
+    Param,
+    Server,
+    Unknown,
+}
 
 pub(crate) fn classify_biz_err(code: i64) -> BizErrFamily {
     use BizErrFamily::*;
@@ -592,7 +703,12 @@ pub(crate) fn classify_biz_err(code: i64) -> BizErrFamily {
     }
 }
 
-pub(crate) fn pick_channels(creds: &Value, config: Option<&Value>, secret: &str, new_gen: bool) -> Vec<Channel> {
+pub(crate) fn pick_channels(
+    creds: &Value,
+    config: Option<&Value>,
+    secret: &str,
+    new_gen: bool,
+) -> Vec<Channel> {
     let mut chans: Vec<Channel> = vec![];
     if new_gen {
         for k in coding_plan_keys_from_creds(creds, secret) {
@@ -606,23 +722,32 @@ pub(crate) fn pick_channels(creds: &Value, config: Option<&Value>, secret: &str,
             }
         }
     }
-    let providers = match config.and_then(|c| c.get("provider")).and_then(|p| p.as_object()) {
+    let providers = match config
+        .and_then(|c| c.get("provider"))
+        .and_then(|p| p.as_object())
+    {
         Some(p) => p,
         None => return chans,
     };
     let mut ordered: Vec<(&String, &Value)> = providers.iter().collect();
-    ordered.sort_by_key(|(_, p)| if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) { 0 } else { 1 });
+    ordered.sort_by_key(|(_, p)| {
+        if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) {
+            0
+        } else {
+            1
+        }
+    });
     let provider_key = |p: &Value| -> Option<String> {
-        let k = p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str())?;
+        let k = p
+            .get("options")
+            .and_then(|o| o.get("apiKey"))
+            .and_then(|k| k.as_str())?;
         (!k.starts_with("enc:") && looks_like_token(k)).then(|| k.to_string())
     };
     for (id, p) in ordered {
         let key = provider_key(p);
         if id.contains("start-plan") {
-            let jwt = safe_decrypt(
-                creds.get("zcodejwttoken").and_then(|v| v.as_str()),
-                secret,
-            );
+            let jwt = safe_decrypt(creds.get("zcodejwttoken").and_then(|v| v.as_str()), secret);
             let active = safe_decrypt(
                 creds.get("oauth:active_provider").and_then(|v| v.as_str()),
                 secret,
@@ -688,7 +813,10 @@ fn query_channels_via(channels: &[Channel], fetch: &FetchFn) -> Result<QuotaOver
                             saw_no_plan = true;
                         } else if best_err.is_none() {
                             let code = resp.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-                            best_err = Some(crate::i18n::trf("err.quota.biz", &[("code", &code.to_string()), ("msg", &msg)]));
+                            best_err = Some(crate::i18n::trf(
+                                "err.quota.biz",
+                                &[("code", &code.to_string()), ("msg", &msg)],
+                            ));
                         }
                     }
                 }
@@ -716,10 +844,15 @@ fn query_channels_via(channels: &[Channel], fetch: &FetchFn) -> Result<QuotaOver
                         if best_err.is_none() {
                             let msg = ["msg", "message", "error"]
                                 .iter()
-                                .find_map(|k| resp.get(k).and_then(|x| x.as_str()).map(String::from))
+                                .find_map(|k| {
+                                    resp.get(k).and_then(|x| x.as_str()).map(String::from)
+                                })
                                 .unwrap_or_default();
                             let code = resp.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-                            best_err = Some(crate::i18n::trf("err.quota.biz", &[("code", &code.to_string()), ("msg", &msg)]));
+                            best_err = Some(crate::i18n::trf(
+                                "err.quota.biz",
+                                &[("code", &code.to_string()), ("msg", &msg)],
+                            ));
                         }
                     }
                     Err(e) => {
@@ -773,7 +906,11 @@ fn merge_parts(parts: Vec<QuotaOverview>) -> QuotaOverview {
         }
         pri_idx = match pri_idx {
             None => Some(i),
-            Some(p) if tier_rank(s.tier_code.as_deref()) > tier_rank(slots[p].tier_code.as_deref()) => Some(i),
+            Some(p)
+                if tier_rank(s.tier_code.as_deref()) > tier_rank(slots[p].tier_code.as_deref()) =>
+            {
+                Some(i)
+            }
             _ => pri_idx,
         };
     }
@@ -786,8 +923,8 @@ fn merge_parts(parts: Vec<QuotaOverview>) -> QuotaOverview {
         used,
         remaining,
         percent_used,
-        plan_tier: pri_idx.map(|i| slots[i].tier.clone()).flatten(),
-        plan_expire: pri_idx.map(|i| slots[i].expire.clone()).flatten(),
+        plan_tier: pri_idx.and_then(|i| slots[i].tier.clone()),
+        plan_expire: pri_idx.and_then(|i| slots[i].expire.clone()),
         is_empty: slots.is_empty(),
         items,
         refreshed_at: refreshed,
@@ -800,7 +937,11 @@ fn query_channels(channels: &[Channel]) -> Result<QuotaOverview, String> {
     query_channels_via(channels, &|url, tok| http_get_json(url, tok, true))
 }
 
-pub fn quota_for_live(home: &Path, creds: &Value, config: Option<&Value>) -> Result<QuotaOverview, String> {
+pub fn quota_for_live(
+    home: &Path,
+    creds: &Value,
+    config: Option<&Value>,
+) -> Result<QuotaOverview, String> {
     let secret = zcrypto::default_secret(home);
     let new_gen = crate::store::new_gen_provider_config(home);
     let channels = pick_channels(creds, config, &secret, new_gen);
@@ -813,7 +954,11 @@ pub fn quota_for_live(home: &Path, creds: &Value, config: Option<&Value>) -> Res
     query_quota(&tokens)
 }
 
-pub fn quota_for_snapshot(home: &Path, creds: &Value, config: Option<&Value>) -> Result<QuotaOverview, String> {
+pub fn quota_for_snapshot(
+    home: &Path,
+    creds: &Value,
+    config: Option<&Value>,
+) -> Result<QuotaOverview, String> {
     quota_for_live(home, creds, config)
 }
 
@@ -836,7 +981,13 @@ fn fmt_reset_time(ms: Option<i64>) -> Option<String> {
         return None;
     }
     use chrono::TimeZone;
-    Some(chrono::Local.timestamp_millis_opt(ms).single()?.format("%m-%d %H:%M").to_string())
+    Some(
+        chrono::Local
+            .timestamp_millis_opt(ms)
+            .single()?
+            .format("%m-%d %H:%M")
+            .to_string(),
+    )
 }
 
 fn safe_prefix(s: &str, n: usize) -> &str {
@@ -871,7 +1022,10 @@ fn looks_like_dt(s: &str) -> bool {
         return false;
     }
     let p = &b[..16];
-    p[4] == b'-' && p[7] == b'-' && p[10] == b' ' && p[13] == b':'
+    p[4] == b'-'
+        && p[7] == b'-'
+        && p[10] == b' '
+        && p[13] == b':'
         && (0..16).all(|i| match i {
             0..=3 | 5..=6 | 8..=9 | 11..=12 | 14..=15 => p[i].is_ascii_digit(),
             _ => true,
@@ -880,18 +1034,34 @@ fn looks_like_dt(s: &str) -> bool {
 
 fn extract_expire(obj: &Value) -> Option<String> {
     const KEYS: [&str; 12] = [
-        "nextRenewTime", "expireTime", "expire_time", "endTime", "end_time", "expireAt", "expiredTime", "validEndTime",
-        "expires_at", "expiresAt", "expired_at", "period_end",
+        "nextRenewTime",
+        "expireTime",
+        "expire_time",
+        "endTime",
+        "end_time",
+        "expireAt",
+        "expiredTime",
+        "validEndTime",
+        "expires_at",
+        "expiresAt",
+        "expired_at",
+        "period_end",
     ];
     for k in KEYS {
         let Some(v) = obj.get(k) else { continue };
         if let Some(n) = v.as_i64() {
             use chrono::TimeZone;
             if n > 1_000_000_000_000 {
-                return chrono::Local.timestamp_millis_opt(n).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string());
+                return chrono::Local
+                    .timestamp_millis_opt(n)
+                    .single()
+                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string());
             }
             if n > 1_000_000_000 {
-                return chrono::Local.timestamp_opt(n, 0).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string());
+                return chrono::Local
+                    .timestamp_opt(n, 0)
+                    .single()
+                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string());
             }
         }
         if let Some(s) = v.as_str() {
@@ -912,7 +1082,11 @@ fn extract_expire(obj: &Value) -> Option<String> {
                 }
             }
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
-                return Some(dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string());
+                return Some(
+                    dt.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string(),
+                );
             }
             let t = if t.as_bytes().get(10) == Some(&b'T') {
                 format!("{} {}", &t[..10], &t[11..])
@@ -975,7 +1149,11 @@ fn tier_from_level(level: &str) -> String {
 
 fn normalize_quota_limit(limit_resp: &Value, sub_resp: Option<&Value>) -> QuotaOverview {
     let data = limit_resp.get("data").cloned().unwrap_or(Value::Null);
-    let limits = data.get("limits").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+    let limits = data
+        .get("limits")
+        .and_then(|l| l.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     let mut items = vec![];
     let mut main: Option<QuotaItem> = None;
@@ -990,12 +1168,26 @@ fn normalize_quota_limit(limit_resp: &Value, sub_resp: Option<&Value>) -> QuotaO
         let reset_ms = l.get("nextResetTime").and_then(|v| v.as_i64());
         let (period, window) = unit_label(unit, number);
         let (kind, name, unit_str, unit_code) = match typ {
-            "TOKENS_LIMIT" => ("prompt_count", format!("提示次数（{period}）"), "次".to_string(), "count"),
-            "TIME_LIMIT" => ("duration", format!("使用时长（{period}）"), "分钟".to_string(), "minutes"),
+            "TOKENS_LIMIT" => (
+                "prompt_count",
+                format!("提示次数（{period}）"),
+                "次".to_string(),
+                "count",
+            ),
+            "TIME_LIMIT" => (
+                "duration",
+                format!("使用时长（{period}）"),
+                "分钟".to_string(),
+                "minutes",
+            ),
             _ => ("raw", format!("{typ}（{period}）"), String::new(), ""),
         };
         let percent_used = if let (Some(t), Some(u)) = (total, used) {
-            if t > 0.0 { Some((u / t * 100.0).clamp(0.0, 100.0)) } else { None }
+            if t > 0.0 {
+                Some((u / t * 100.0).clamp(0.0, 100.0))
+            } else {
+                None
+            }
         } else {
             percentage.map(|p| p.clamp(0.0, 100.0))
         };
@@ -1009,9 +1201,9 @@ fn normalize_quota_limit(limit_resp: &Value, sub_resp: Option<&Value>) -> QuotaO
             server_percentage: percentage,
             unit: unit_str,
             period_end: reset.as_ref().map(|r| format!("{r} 重置")),
-            kind: (kind != "").then(|| kind.to_string()),
+            kind: (!kind.is_empty()).then(|| kind.to_string()),
             window: Some(window),
-            unit_code: (unit_code != "").then(|| unit_code.to_string()),
+            unit_code: (!unit_code.is_empty()).then(|| unit_code.to_string()),
             reset,
         };
         if typ == "TIME_LIMIT" && total.is_some() {
@@ -1110,7 +1302,11 @@ fn unwrap(data: &Value) -> Value {
 fn flatten_numbers(obj: &Value, prefix: &str, out: &mut Vec<(String, f64)>) {
     if let Some(m) = obj.as_object() {
         for (k, v) in m {
-            let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+            let p = if prefix.is_empty() {
+                k.clone()
+            } else {
+                format!("{prefix}.{k}")
+            };
             if let Some(n) = to_number(v) {
                 out.push((p, n));
             } else {
@@ -1150,7 +1346,11 @@ fn sum_numbers(pool: &[(String, f64)], keys: &[&str]) -> Option<f64> {
             count += 1;
         }
     }
-    if count > 0 { Some(total) } else { None }
+    if count > 0 {
+        Some(total)
+    } else {
+        None
+    }
 }
 
 fn first_number(pool: &[(String, f64)], keys: &[&str]) -> Option<f64> {
@@ -1168,15 +1368,29 @@ pub fn extract_plan_tier(current_data: &Value) -> Option<String> {
     let plans = cur.get("plans").and_then(|p| p.as_array())?;
     let active: Vec<&Value> = plans
         .iter()
-        .filter(|p| p.get("status").and_then(|s| s.as_str()).unwrap_or("").to_lowercase() == "active")
+        .filter(|p| {
+            p.get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_lowercase()
+                == "active"
+        })
         .collect();
     if active.is_empty() {
         return None;
     }
     let matches = |kw: &[&str]| {
         active.iter().any(|p| {
-            let id = p.get("plan_id").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-            let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let id = p
+                .get("plan_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let name = p
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
             kw.iter().any(|k| id.contains(k) || name.contains(k))
         })
     };
@@ -1207,9 +1421,18 @@ fn plan_tier_from_id(plan_id: &str, name: Option<&str>) -> (String, String) {
         ("Lite".into(), "lite".into())
     } else if hay.contains("start") {
         ("Start Plan".into(), "start".into())
-    } else if ["trial", "taste", "experience", "gift", "weekend", "promo", "activity", "体验"]
-        .iter()
-        .any(|k| hay.contains(k))
+    } else if [
+        "trial",
+        "taste",
+        "experience",
+        "gift",
+        "weekend",
+        "promo",
+        "activity",
+        "体验",
+    ]
+    .iter()
+    .any(|k| hay.contains(k))
     {
         ("体验".into(), "trial".into())
     } else {
@@ -1265,7 +1488,11 @@ fn normalize_balance(balance_data: &Value) -> QuotaOverview {
                         .unwrap_or(false)
                 })
                 .map(|pl| {
-                    let pid = pl.get("plan_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let pid = pl
+                        .get("plan_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let pname = pl.get("name").and_then(|v| v.as_str()).map(str::to_string);
                     let (tier, tier_code) = plan_tier_from_id(&pid, pname.as_deref());
                     PlanSlot {
@@ -1287,9 +1514,12 @@ fn normalize_balance(balance_data: &Value) -> QuotaOverview {
         .and_then(|b| b.as_array())
         .map(|arr| {
             arr.iter().any(|item| {
-                ["plan_id", "planId", "entitlement_id"]
-                    .iter()
-                    .any(|k| item.get(k).and_then(Value::as_str).map(|s| !s.is_empty()).unwrap_or(false))
+                ["plan_id", "planId", "entitlement_id"].iter().any(|k| {
+                    item.get(k)
+                        .and_then(Value::as_str)
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false)
+                })
             })
         })
         .unwrap_or(false);
@@ -1315,8 +1545,15 @@ fn normalize_balance(balance_data: &Value) -> QuotaOverview {
                     _ => None,
                 },
                 server_percentage: None,
-                unit: item.get("unit_type").or_else(|| item.get("meter")).and_then(Value::as_str).unwrap_or("quota").to_string(),
-                period_end: ["period_end", "expires_at"].iter().find_map(|k| item.get(k).and_then(expiry_field)),
+                unit: item
+                    .get("unit_type")
+                    .or_else(|| item.get("meter"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("quota")
+                    .to_string(),
+                period_end: ["period_end", "expires_at"]
+                    .iter()
+                    .find_map(|k| item.get(k).and_then(expiry_field)),
                 ..Default::default()
             };
             let bpid = ["plan_id", "planId", "entitlement_id"]
@@ -1353,13 +1590,45 @@ fn normalize_balance(balance_data: &Value) -> QuotaOverview {
             });
         } else {
             let ptot = sum_numbers(&pool, &["total_units"]).or_else(|| {
-                first_number(&pool, &["total", "totalQuota", "totalCredits", "quotaTotal", "amountTotal", "creditTotal"])
+                first_number(
+                    &pool,
+                    &[
+                        "total",
+                        "totalQuota",
+                        "totalCredits",
+                        "quotaTotal",
+                        "amountTotal",
+                        "creditTotal",
+                    ],
+                )
             });
             let pused = sum_numbers(&pool, &["used_units"]).or_else(|| {
-                first_number(&pool, &["used", "usedQuota", "usedCredits", "quotaUsed", "amountUsed", "consumed", "totalUsed"])
+                first_number(
+                    &pool,
+                    &[
+                        "used",
+                        "usedQuota",
+                        "usedCredits",
+                        "quotaUsed",
+                        "amountUsed",
+                        "consumed",
+                        "totalUsed",
+                    ],
+                )
             });
             let prem = sum_numbers(&pool, &["remaining_units"]).or_else(|| {
-                first_number(&pool, &["remaining", "remain", "balance", "available", "availableQuota", "left", "quotaRemaining"])
+                first_number(
+                    &pool,
+                    &[
+                        "remaining",
+                        "remain",
+                        "balance",
+                        "available",
+                        "availableQuota",
+                        "left",
+                        "quotaRemaining",
+                    ],
+                )
             });
             if ptot.is_some() || pused.is_some() || prem.is_some() {
                 let t = extract_plan_tier(balance_data);
@@ -1426,26 +1695,44 @@ fn normalize_balance(balance_data: &Value) -> QuotaOverview {
 
     let plan_expire_chain = extract_expire(&balance)
         .or_else(|| {
-            balance.get("plans").and_then(|p| p.as_array()).and_then(|arr| {
-                arr.iter()
-                    .find(|pl| pl.get("status").and_then(|s| s.as_str()).map(|s| s.eq_ignore_ascii_case("active")).unwrap_or(false))
-                    .and_then(extract_expire)
-                    .or_else(|| arr.first().and_then(extract_expire))
-            })
+            balance
+                .get("plans")
+                .and_then(|p| p.as_array())
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|pl| {
+                            pl.get("status")
+                                .and_then(|s| s.as_str())
+                                .map(|s| s.eq_ignore_ascii_case("active"))
+                                .unwrap_or(false)
+                        })
+                        .and_then(extract_expire)
+                        .or_else(|| arr.first().and_then(extract_expire))
+                })
         })
         .or_else(|| {
-            balance.get("balances").and_then(|b| b.as_array()).and_then(|arr| {
-                arr.iter()
-                    .filter_map(|it| it.get("expires_at").and_then(|v| v.as_i64()))
-                    .filter(|n| *n > 1_000_000_000)
-                    .max()
-                    .and_then(|n| {
-                        use chrono::TimeZone;
-                        chrono::Local.timestamp_opt(n, 0).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-                    })
-            })
+            balance
+                .get("balances")
+                .and_then(|b| b.as_array())
+                .and_then(|arr| {
+                    arr.iter()
+                        .filter_map(|it| it.get("expires_at").and_then(|v| v.as_i64()))
+                        .filter(|n| *n > 1_000_000_000)
+                        .max()
+                        .and_then(|n| {
+                            use chrono::TimeZone;
+                            chrono::Local
+                                .timestamp_opt(n, 0)
+                                .single()
+                                .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                        })
+                })
         })
-        .or_else(|| items.iter().find_map(|i| i.period_end.clone().filter(|s| !s.is_empty())));
+        .or_else(|| {
+            items
+                .iter()
+                .find_map(|i| i.period_end.clone().filter(|s| !s.is_empty()))
+        });
 
     if slots.len() == 1 && slots[0].expire.is_none() {
         slots[0].expire = plan_expire_chain.clone();
@@ -1464,8 +1751,15 @@ fn normalize_balance(balance_data: &Value) -> QuotaOverview {
         remaining,
         percent_used,
         plan_tier: slots.get(pri_idx).and_then(|p| p.tier.clone()),
-        plan_expire: slots.get(pri_idx).and_then(|p| p.expire.clone()).or(plan_expire_chain),
-        is_empty: balance.get("balances").and_then(|b| b.as_array()).map(|a| a.is_empty()).unwrap_or(false),
+        plan_expire: slots
+            .get(pri_idx)
+            .and_then(|p| p.expire.clone())
+            .or(plan_expire_chain),
+        is_empty: balance
+            .get("balances")
+            .and_then(|b| b.as_array())
+            .map(|a| a.is_empty())
+            .unwrap_or(false),
         items,
         refreshed_at: 0,
         source: String::new(),

@@ -1,4 +1,3 @@
-
 use crate::i18n::tr;
 use crate::quota::{self, Channel};
 use serde::Serialize;
@@ -8,7 +7,10 @@ use std::time::Duration;
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProbeOutcome {
-    Entitled { entitlements: usize, models: Vec<String> },
+    Entitled {
+        entitlements: usize,
+        models: Vec<String>,
+    },
     NoEntitlement,
     AuthFailed,
 }
@@ -29,7 +31,9 @@ pub(crate) fn switch_probe(
     new_gen: bool,
 ) -> Option<ProbeOutcome> {
     let channels = quota::pick_channels(creds, config, secret, new_gen);
-    classify_via(&channels, &|url, token| real_fetch(url, token, mid.as_deref()))
+    classify_via(&channels, &|url, token| {
+        real_fetch(url, token, mid.as_deref())
+    })
 }
 
 pub(crate) fn probe_message(outcome: &ProbeOutcome) -> String {
@@ -48,21 +52,18 @@ fn balance_entitlements(balance: &Value) -> Option<usize> {
     if balances.is_none() && plans.is_none() {
         return None;
     }
-    let n = balances
-        .map(|a| a.len())
-        .filter(|n| *n > 0)
-        .or_else(|| {
-            plans.map(|arr| {
-                arr.iter()
-                    .filter(|pl| {
-                        pl.get("status")
-                            .and_then(|s| s.as_str())
-                            .map(|s| s.eq_ignore_ascii_case("active"))
-                            .unwrap_or(false)
-                    })
-                    .count()
-            })
-        })?;
+    let n = balances.map(|a| a.len()).filter(|n| *n > 0).or_else(|| {
+        plans.map(|arr| {
+            arr.iter()
+                .filter(|pl| {
+                    pl.get("status")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.eq_ignore_ascii_case("active"))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+    })?;
     Some(n)
 }
 
@@ -166,13 +167,11 @@ fn billing_verdict(v: Result<Value, ProbeErr>) -> Verdict {
             Some(_) => Verdict::Empty,
             None => Verdict::Inconclusive,
         },
-        Ok(v) => {
-            match biz_code(&v).map(quota::classify_biz_err) {
-                Some(quota::BizErrFamily::Auth) => Verdict::Auth,
-                Some(quota::BizErrFamily::QuotaExhausted) => Verdict::Empty,
-                _ => Verdict::Inconclusive,
-            }
-        }
+        Ok(v) => match biz_code(&v).map(quota::classify_biz_err) {
+            Some(quota::BizErrFamily::Auth) => Verdict::Auth,
+            Some(quota::BizErrFamily::QuotaExhausted) => Verdict::Empty,
+            _ => Verdict::Inconclusive,
+        },
         Err(ProbeErr::Auth) => Verdict::Auth,
         Err(ProbeErr::Other(_)) => Verdict::Inconclusive,
     }
@@ -189,9 +188,13 @@ fn classify_via(channels: &[Channel], fetch: &ProbeFetch) -> Option<ProbeOutcome
     let mut definite_channels = 0usize;
     for ch in channels {
         let verdict = match ch {
-            Channel::Monitor(key) => monitor_verdict(fetch(&quota::SUBSCRIPTION_URL, key)),
+            Channel::Monitor(key) => monitor_verdict(fetch(quota::SUBSCRIPTION_URL, key)),
             Channel::ZaiBilling(tok) => {
-                let url = format!("{}?app_version={}", quota::BILLING_BALANCE_URL, quota::zcode_app_version());
+                let url = format!(
+                    "{}?app_version={}",
+                    quota::BILLING_BALANCE_URL,
+                    quota::zcode_app_version()
+                );
                 billing_verdict(fetch(&url, tok))
             }
         };
@@ -217,7 +220,10 @@ fn classify_via(channels: &[Channel], fetch: &ProbeFetch) -> Option<ProbeOutcome
         }
     }
     if entitled > 0 {
-        return Some(ProbeOutcome::Entitled { entitlements: entitled, models });
+        return Some(ProbeOutcome::Entitled {
+            entitlements: entitled,
+            models,
+        });
     }
     if definite_channels == channels.len() && definite_empty && !auth_failed {
         return Some(ProbeOutcome::NoEntitlement);
@@ -241,7 +247,10 @@ fn real_fetch(url: &str, token: &str, mid: Option<&str>) -> Result<Value, ProbeE
     } else {
         req = req
             .set("Authorization", &format!("Bearer {token}"))
-            .set("User-Agent", &format!("ZCode/{}", quota::zcode_app_version()))
+            .set(
+                "User-Agent",
+                &format!("ZCode/{}", quota::zcode_app_version()),
+            )
             .set("x-request-id", &uuid::Uuid::new_v4().to_string());
     }
     let resp = req.call().map_err(map_http_err)?;

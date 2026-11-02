@@ -1,4 +1,3 @@
-
 use crate::quota;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -15,20 +14,31 @@ pub struct OAuthProvider {
 }
 
 pub const OAUTH_PROVIDERS: &[OAuthProvider] = &[
-    OAuthProvider { id: "bigmodel", display: "BigModel（智谱开放平台）" },
-    OAuthProvider { id: "zai", display: "z.ai（国际站）" },
+    OAuthProvider {
+        id: "bigmodel",
+        display: "BigModel（智谱开放平台）",
+    },
+    OAuthProvider {
+        id: "zai",
+        display: "z.ai（国际站）",
+    },
 ];
 
 const REDIRECT_ENC: &str = "zcode%3A%2F%2Foauth%2Fcallback";
 
 pub fn bridge_redirect_uri() -> String {
-    format!("https://zcode.z.ai/app/oauth/login?redirect={REDIRECT_ENC}&app_version={}", quota::CLIENT_APP_VERSION)
+    format!(
+        "https://zcode.z.ai/app/oauth/login?redirect={REDIRECT_ENC}&app_version={}",
+        quota::CLIENT_APP_VERSION
+    )
 }
 
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -72,12 +82,23 @@ fn init_flow_at(url: &str, provider: &str, mid: &str) -> Result<FlowInit, String
     let invalid = || crate::i18n::tr("err.oauth.init_invalid");
     if v.get("code").and_then(|c| c.as_i64()) != Some(0) {
         let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("");
-        return Err(crate::i18n::trf("err.oauth.init_invalid_msg", &[("msg", msg)]));
+        return Err(crate::i18n::trf(
+            "err.oauth.init_invalid_msg",
+            &[("msg", msg)],
+        ));
     }
     let data = v.get("data").ok_or_else(invalid)?;
-    let flow_id = data.get("flow_id").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty())
+    let flow_id = data
+        .get("flow_id")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .ok_or_else(invalid)?;
-    let authorize = data.get("authorize_url").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty())
+    let authorize = data
+        .get("authorize_url")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .ok_or_else(invalid)?;
     let poll_token = data
         .get("poll_token")
@@ -86,9 +107,15 @@ fn init_flow_at(url: &str, provider: &str, mid: &str) -> Result<FlowInit, String
         .filter(|s| !s.is_empty())
         .map(String::from)
         .unwrap_or(poll_token);
-    let expires_at_ms = data.get("expires_at").and_then(|x| x.as_f64()).map(|s| (s * 1000.0) as u128)
+    let expires_at_ms = data
+        .get("expires_at")
+        .and_then(|x| x.as_f64())
+        .map(|s| (s * 1000.0) as u128)
         .ok_or_else(invalid)?;
-    let poll_interval_ms = data.get("poll_interval_sec").and_then(|x| x.as_f64()).map(|s| (s * 1000.0) as u64)
+    let poll_interval_ms = data
+        .get("poll_interval_sec")
+        .and_then(|x| x.as_f64())
+        .map(|s| (s * 1000.0) as u64)
         .ok_or_else(invalid)?;
 
     let auth_url: tauri::Url = authorize.parse().map_err(|_| invalid())?;
@@ -105,7 +132,11 @@ fn init_flow_at(url: &str, provider: &str, mid: &str) -> Result<FlowInit, String
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let remaining = expires_at_ms.saturating_sub(now);
-    if auth_url.scheme() != "https" || remaining == 0 || poll_interval_ms < 1_000 || poll_interval_ms as u128 >= remaining {
+    if auth_url.scheme() != "https"
+        || remaining == 0
+        || poll_interval_ms < 1_000
+        || poll_interval_ms as u128 >= remaining
+    {
         return Err(invalid());
     }
     let init_base: String = url
@@ -136,13 +167,18 @@ pub fn poll_flow_once(url: &str, poll_token: &str, mid: &str) -> Result<PollOutc
     }
     let resp = match req.call() {
         Ok(r) => r,
-        Err(ureq::Error::Status(code, resp)) if (400..500).contains(&code) && code != 408 && code != 429 => {
+        Err(ureq::Error::Status(code, resp))
+            if (400..500).contains(&code) && code != 408 && code != 429 =>
+        {
             let body = resp.into_string().unwrap_or_default();
             let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
             if v.get("code").and_then(|c| c.as_i64()) == Some(3004) {
                 return Err(crate::i18n::tr("err.oauth.expired"));
             }
-            return Err(crate::i18n::trf("err.oauth.poll_terminal", &[("code", &code.to_string())]));
+            return Err(crate::i18n::trf(
+                "err.oauth.poll_terminal",
+                &[("code", &code.to_string())],
+            ));
         }
         Err(_) => return Ok(PollOutcome::Pending),
     };
@@ -154,7 +190,10 @@ pub fn poll_flow_once(url: &str, poll_token: &str, mid: &str) -> Result<PollOutc
     let invalid = || crate::i18n::tr("err.oauth.poll_invalid");
     if v.get("code").and_then(|c| c.as_i64()) != Some(0) {
         let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("");
-        return Err(crate::i18n::trf("err.oauth.poll_invalid_msg", &[("msg", msg)]));
+        return Err(crate::i18n::trf(
+            "err.oauth.poll_invalid_msg",
+            &[("msg", msg)],
+        ));
     }
     let data = v.get("data").cloned().ok_or_else(invalid)?;
     match data.get("status").and_then(|s| s.as_str()).unwrap_or("") {
@@ -206,7 +245,9 @@ pub fn parse_callback(url: &str) -> Result<CallbackKind, String> {
     let mut state = String::new();
     let mut has_attribution = false;
     for kv in qs.split('&') {
-        let (k, v) = kv.split_once('=').ok_or_else(|| crate::i18n::tr("err.oauth.bad_cb"))?;
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| crate::i18n::tr("err.oauth.bad_cb"))?;
         match urldecode(k).as_str() {
             "authCode" => code = urldecode(v),
             "code" if code.is_empty() => code = urldecode(v),
@@ -298,9 +339,14 @@ pub fn parse_proxy_url(input: &str) -> Result<String, String> {
     if host.contains(' ') || host.contains(':') {
         return Err(crate::i18n::tr("err.proxy.bad_host"));
     }
-    let port_num: u32 = port.parse().map_err(|_| crate::i18n::trf("err.proxy.port_nan", &[("port", port)]))?;
+    let port_num: u32 = port
+        .parse()
+        .map_err(|_| crate::i18n::trf("err.proxy.port_nan", &[("port", port)]))?;
     if !(1..=65535).contains(&port_num) {
-        return Err(crate::i18n::trf("err.proxy.port_range", &[("port", &port_num.to_string())]));
+        return Err(crate::i18n::trf(
+            "err.proxy.port_range",
+            &[("port", &port_num.to_string())],
+        ));
     }
     Ok(format!("{scheme}://{host}:{port_num}"))
 }
@@ -331,7 +377,10 @@ pub fn exchange_token(provider: &str, code: &str, state: &str, mid: &str) -> Res
     let code_n = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
     if code_n != 0 {
         let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("");
-        return Err(crate::i18n::trf("err.oauth.exchange", &[("code", &code_n.to_string()), ("msg", msg)]));
+        return Err(crate::i18n::trf(
+            "err.oauth.exchange",
+            &[("code", &code_n.to_string()), ("msg", msg)],
+        ));
     }
     let token = v
         .pointer("/data/token")
@@ -360,7 +409,10 @@ fn backend_user_profile(u: &Value) -> Option<Value> {
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false)
     };
-    if !["user_id", "email", "name", "avatar"].iter().any(|k| nonempty(k)) {
+    if !["user_id", "email", "name", "avatar"]
+        .iter()
+        .any(|k| nonempty(k))
+    {
         return None;
     }
     let id = u
@@ -373,7 +425,11 @@ fn backend_user_profile(u: &Value) -> Option<Value> {
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .or_else(|| u.get("email").and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
+        .or_else(|| {
+            u.get("email")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
         .or(id);
     Some(json!({
         "id": id,
@@ -386,7 +442,10 @@ fn backend_user_profile(u: &Value) -> Option<Value> {
 
 pub fn fetch_userinfo(provider: &str, token: &str) -> Option<Value> {
     let (url, bearer) = match provider {
-        "bigmodel" => ("https://bigmodel.cn/api/biz/customer/getCustomerInfo", false),
+        "bigmodel" => (
+            "https://bigmodel.cn/api/biz/customer/getCustomerInfo",
+            false,
+        ),
         "zai" => ("https://chat.z.ai/api/oauth/userinfo", true),
         _ => return None,
     };
@@ -405,7 +464,11 @@ pub fn fetch_userinfo(provider: &str, token: &str) -> Option<Value> {
         .into_string()
         .ok()?;
     let v: Value = serde_json::from_str(&resp).ok()?;
-    if v.get("code").and_then(|c| c.as_i64()).map(|c| c != 0).unwrap_or(false) {
+    if v.get("code")
+        .and_then(|c| c.as_i64())
+        .map(|c| c != 0)
+        .unwrap_or(false)
+    {
         return None;
     }
     let data = v.get("data").cloned().unwrap_or(v);
@@ -539,7 +602,11 @@ pub fn pick_org_project(customer: &Value) -> Option<(String, String)> {
 fn keys_array(v: &Value) -> Vec<&Value> {
     match v {
         Value::Array(a) => a.iter().collect(),
-        Value::Object(o) => o.get("data").and_then(|d| d.as_array()).map(|a| a.iter().collect()).unwrap_or_default(),
+        Value::Object(o) => o
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|a| a.iter().collect())
+            .unwrap_or_default(),
         _ => vec![],
     }
 }
@@ -564,7 +631,7 @@ pub fn resolve_biz_api_key(base: &str, auth: &str, require_secret: bool) -> Opti
     let mut found = keys_array(&list)
         .into_iter()
         .find(|k| k.get("name").and_then(|n| n.as_str()) == Some(API_KEY_NAME))
-        .map(|k| k.clone());
+        .cloned();
     if found.is_none() {
         found = agent
             .post(&keys_url)
@@ -583,7 +650,11 @@ pub fn resolve_biz_api_key(base: &str, auth: &str, require_secret: bool) -> Opti
         .filter(|s| !s.is_empty())?
         .to_string();
     let secret = get_json(&format!("{keys_url}/copy/{}", urlencode(&key)))
-        .and_then(|v| v.get("secretKey").and_then(|s| s.as_str()).map(String::from))
+        .and_then(|v| {
+            v.get("secretKey")
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
         .unwrap_or_default();
     if secret.trim().is_empty() {
         return if require_secret { None } else { Some(key) };
@@ -604,15 +675,13 @@ fn resolve_zai_business_token_at(url: &str, zai_access_token: &str) -> Option<St
         .into_string()
         .ok()?;
     let v: Value = serde_json::from_str(&resp).ok()?;
-    ["access_token", "accessToken"]
-        .iter()
-        .find_map(|k| {
-            v.pointer(&format!("/data/{k}"))
-                .and_then(|x| x.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-        })
+    ["access_token", "accessToken"].iter().find_map(|k| {
+        v.pointer(&format!("/data/{k}"))
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    })
 }
 
 pub fn assemble_config(provider: &str, jwt: &str, access_token: &str) -> Value {
@@ -639,7 +708,10 @@ pub fn assemble_config(provider: &str, jwt: &str, access_token: &str) -> Value {
                 resolve_biz_api_key(BIGMODEL_BIZ_BASE, access_token.trim(), false)
             }
             .unwrap_or_default();
-            providers.insert("builtin:bigmodel".into(), entry("Bigmodel - API Key", &key, BIGMODEL_ANTHROPIC_BASE));
+            providers.insert(
+                "builtin:bigmodel".into(),
+                entry("Bigmodel - API Key", &key, BIGMODEL_ANTHROPIC_BASE),
+            );
             providers.insert(
                 "builtin:bigmodel-coding-plan".into(),
                 entry("BigModel - Coding Plan", &key, BIGMODEL_ANTHROPIC_BASE),
@@ -661,7 +733,11 @@ pub fn assemble_config(provider: &str, jwt: &str, access_token: &str) -> Value {
             let key = if access_token.trim().is_empty() {
                 None
             } else {
-                resolve_biz_api_key(ZAI_API_BASE, &format!("Bearer {}", access_token.trim()), true)
+                resolve_biz_api_key(
+                    ZAI_API_BASE,
+                    &format!("Bearer {}", access_token.trim()),
+                    true,
+                )
             }
             .unwrap_or_default();
             providers.insert(

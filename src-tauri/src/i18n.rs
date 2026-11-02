@@ -1,4 +1,3 @@
-
 use std::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -594,7 +593,7 @@ pub fn code_of(err: &str) -> Option<&str> {
     (!code.is_empty()
         && !code.contains(' ')
         && code.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
-        .then_some(code)
+    .then_some(code)
 }
 
 #[cfg(test)]
@@ -612,7 +611,10 @@ mod tests {
             assert_eq!(n, keys.len(), "{name}: duplicate keys");
             sets.push(keys);
         }
-        assert!(sets.windows(2).all(|w| w[0] == w[1]), "zh/en/ru key sets differ");
+        assert!(
+            sets.windows(2).all(|w| w[0] == w[1]),
+            "zh/en/ru key sets differ"
+        );
     }
 
     #[test]
@@ -626,7 +628,10 @@ mod tests {
 
     #[test]
     fn trf_substitutes_placeholders() {
-        assert_eq!(tr_lang(Lang::Zh, "err.zcode.path_invalid"), "ZCode 路径无效：{p}");
+        assert_eq!(
+            tr_lang(Lang::Zh, "err.zcode.path_invalid"),
+            "ZCode 路径无效：{p}"
+        );
         let s = tr_lang(Lang::En, "err.zcode.path_invalid").replace("{p}", "X");
         assert_eq!(s, "Invalid ZCode path: X");
     }

@@ -1,4 +1,3 @@
-
 use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -26,9 +25,11 @@ pub fn seal(payload: &Value, password: &str, format: &str) -> Result<Value, Stri
     aes_gcm::aead::OsRng.fill_bytes(&mut salt);
     aes_gcm::aead::OsRng.fill_bytes(&mut nonce_b);
 
-    let plain = serde_json::to_vec(payload).map_err(|e| crate::i18n::trf("err.serialize", &[("e", &e.to_string())]))?;
+    let plain = serde_json::to_vec(payload)
+        .map_err(|e| crate::i18n::trf("err.serialize", &[("e", &e.to_string())]))?;
     let key = derive_key(password, &salt);
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| crate::i18n::trf("err.cipher.key", &[("e", &e.to_string())]))?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| crate::i18n::trf("err.cipher.key", &[("e", &e.to_string())]))?;
     let ct = cipher
         .encrypt(Nonce::from_slice(&nonce_b), plain.as_slice())
         .map_err(|e| crate::i18n::trf("err.cipher.encrypt", &[("e", &e.to_string())]))?;
@@ -43,28 +44,38 @@ pub fn seal(payload: &Value, password: &str, format: &str) -> Result<Value, Stri
 }
 
 pub fn open(envelope: &Value, password: &str) -> Result<Value, String> {
-    let kdf = envelope.get("kdf").ok_or_else(|| crate::i18n::tr("err.cipher.no_kdf"))?;
-    let c = envelope.get("cipher").ok_or_else(|| crate::i18n::tr("err.cipher.no_cipher"))?;
-    let salt = B64.decode(kdf.get("salt").and_then(|v| v.as_str()).unwrap_or_default())
+    let kdf = envelope
+        .get("kdf")
+        .ok_or_else(|| crate::i18n::tr("err.cipher.no_kdf"))?;
+    let c = envelope
+        .get("cipher")
+        .ok_or_else(|| crate::i18n::tr("err.cipher.no_cipher"))?;
+    let salt = B64
+        .decode(kdf.get("salt").and_then(|v| v.as_str()).unwrap_or_default())
         .map_err(|_| crate::i18n::tr("err.cipher.bad_salt"))?;
-    let nonce_b = B64.decode(c.get("nonce").and_then(|v| v.as_str()).unwrap_or_default())
+    let nonce_b = B64
+        .decode(c.get("nonce").and_then(|v| v.as_str()).unwrap_or_default())
         .map_err(|_| crate::i18n::tr("err.cipher.bad_nonce"))?;
-    let tag = B64.decode(c.get("tag").and_then(|v| v.as_str()).unwrap_or_default())
+    let tag = B64
+        .decode(c.get("tag").and_then(|v| v.as_str()).unwrap_or_default())
         .map_err(|_| crate::i18n::tr("err.cipher.bad_tag"))?;
-    let data = B64.decode(c.get("data").and_then(|v| v.as_str()).unwrap_or_default())
+    let data = B64
+        .decode(c.get("data").and_then(|v| v.as_str()).unwrap_or_default())
         .map_err(|_| crate::i18n::tr("err.cipher.bad_data"))?;
     if nonce_b.len() != 12 {
         return Err(crate::i18n::tr("err.cipher.nonce_len"));
     }
 
     let key = derive_key(password, &salt);
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| crate::i18n::trf("err.cipher.key", &[("e", &e.to_string())]))?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| crate::i18n::trf("err.cipher.key", &[("e", &e.to_string())]))?;
     let mut buf = data.clone();
     buf.extend_from_slice(&tag);
     let plain = cipher
         .decrypt(Nonce::from_slice(&nonce_b), buf.as_slice())
         .map_err(|_| crate::i18n::coded("wrong_password", "err.cipher.wrong_pw", &[]))?;
-    serde_json::from_slice(&plain).map_err(|e| crate::i18n::trf("err.cipher.bad_plain", &[("e", &e.to_string())]))
+    serde_json::from_slice(&plain)
+        .map_err(|e| crate::i18n::trf("err.cipher.bad_plain", &[("e", &e.to_string())]))
 }
 
 pub fn is_sealed(v: &Value) -> bool {

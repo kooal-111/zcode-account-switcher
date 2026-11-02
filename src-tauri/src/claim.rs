@@ -1,4 +1,3 @@
-
 use crate::quota;
 use crate::zcrypto;
 use chrono::Local;
@@ -151,9 +150,7 @@ pub(crate) fn telemetry_user_id(home: &Path, creds: &Value) -> Option<String> {
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "zai".to_string());
-    let raw = creds
-        .get(format!("oauth:{provider}:user_info"))?
-        .as_str()?;
+    let raw = creds.get(format!("oauth:{provider}:user_info"))?.as_str()?;
     let plain = decrypt_credential(raw, &secret)?;
     let info: Value = serde_json::from_str(&plain).ok()?;
     let pick = |k: &str| {
@@ -260,9 +257,11 @@ fn http_err(prefix: &str, e: ureq::Error) -> String {
         let body = resp.into_string().unwrap_or_default();
         let msg = serde_json::from_str::<Value>(&body)
             .ok()
-            .and_then(|v| ["msg", "message", "error"]
-                .iter()
-                .find_map(|k| v.get(k).and_then(|x| x.as_str()).map(String::from)))
+            .and_then(|v| {
+                ["msg", "message", "error"]
+                    .iter()
+                    .find_map(|k| v.get(k).and_then(|x| x.as_str()).map(String::from))
+            })
             .unwrap_or_default();
         return format!("{prefix} HTTP {code}: {msg}");
     }
@@ -381,8 +380,16 @@ pub fn fetch_captcha_config() -> Result<CaptchaConfig, String> {
 }
 
 fn parse_captcha_config(v: &Value) -> CaptchaConfig {
-    let c = v.pointer("/data/configs/captcha").cloned().unwrap_or(Value::Null);
-    let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let c = v
+        .pointer("/data/configs/captcha")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let s = |k: &str| {
+        c.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
     CaptchaConfig {
         enabled: c.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
         region: s("region"),
@@ -426,15 +433,24 @@ fn parse_plan(p: &Value) -> Option<ClaimPlan> {
                             .unwrap_or(false)
                 })
                 .map(|e| ClaimGrant {
-                    name: str_field(e, "show_name", "showName").unwrap_or("").to_string(),
+                    name: str_field(e, "show_name", "showName")
+                        .unwrap_or("")
+                        .to_string(),
                     units: num_field(e, "grant_units", "grantUnits").unwrap_or(0.0),
-                    period: str_field(e, "period", "period").unwrap_or("one_time").to_string(),
+                    period: str_field(e, "period", "period")
+                        .unwrap_or("one_time")
+                        .to_string(),
                 })
                 .collect()
         })
         .unwrap_or_default();
     Some(ClaimPlan {
-        name: p.get("name").and_then(|s| s.as_str()).unwrap_or("").trim().to_string(),
+        name: p
+            .get("name")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
         description: p
             .get("description")
             .and_then(|s| s.as_str())
@@ -452,7 +468,9 @@ fn parse_plan(p: &Value) -> Option<ClaimPlan> {
 // Значение = локальная дата последней успешной отправки ("YYYY-MM-DD").
 
 fn activation_cache_path(home: &Path) -> PathBuf {
-    home.join(".zcode-switch").join("state").join("activation-cache.json")
+    home.join(".zcode-switch")
+        .join("state")
+        .join("activation-cache.json")
 }
 
 fn activation_cache_key(user_id: &str, device_mid: &str, app_version: &str) -> String {
@@ -500,7 +518,10 @@ pub(crate) fn activation_sent_today(
     today: &str,
 ) -> bool {
     let key = activation_cache_key(user_id, device_mid, app_version);
-    load_activation_cache(home).get(&key).map(|d| d == today).unwrap_or(false)
+    load_activation_cache(home)
+        .get(&key)
+        .map(|d| d == today)
+        .unwrap_or(false)
 }
 
 pub(crate) fn mark_activation_sent(
@@ -539,7 +560,10 @@ pub fn failure_message(code: i64, body: &Value) -> String {
     if server_msg.is_empty() {
         base
     } else {
-        crate::i18n::trf("claim.fail.with_server", &[("base", &base), ("server_msg", &server_msg)])
+        crate::i18n::trf(
+            "claim.fail.with_server",
+            &[("base", &base), ("server_msg", &server_msg)],
+        )
     }
 }
 
@@ -551,9 +575,13 @@ mod tests {
     fn fixture(name: &str) -> Value {
         let raw = match name {
             "preview_two_plans.json" => include_str!("../tests/fixtures/preview_two_plans.json"),
-            "preview_unknown_fields.json" => include_str!("../tests/fixtures/preview_unknown_fields.json"),
+            "preview_unknown_fields.json" => {
+                include_str!("../tests/fixtures/preview_unknown_fields.json")
+            }
             "claim_error_1005.json" => include_str!("../tests/fixtures/claim_error_1005.json"),
-            "captcha_enabled_camel.json" => include_str!("../tests/fixtures/captcha_enabled_camel.json"),
+            "captcha_enabled_camel.json" => {
+                include_str!("../tests/fixtures/captcha_enabled_camel.json")
+            }
             "captcha_skip_snake.json" => include_str!("../tests/fixtures/captcha_skip_snake.json"),
             "captcha_disabled.json" => include_str!("../tests/fixtures/captcha_disabled.json"),
             other => panic!("unknown fixture: {other}"),
@@ -591,8 +619,14 @@ mod tests {
         assert_eq!(g.units, 1500000.0);
         assert_eq!(g.period, "daily");
         // Китайские строки в Rust больше не формируются
-        assert!(serde_json::to_string(&sorted[0]).unwrap().find("每日").is_none());
-        assert!(serde_json::to_string(&sorted[0]).unwrap().find("亿").is_none());
+        assert!(serde_json::to_string(&sorted[0])
+            .unwrap()
+            .find("每日")
+            .is_none());
+        assert!(serde_json::to_string(&sorted[0])
+            .unwrap()
+            .find("亿")
+            .is_none());
     }
 
     #[test]
@@ -626,12 +660,16 @@ mod tests {
         let headers = quota::zai_billing_headers("");
         let filtered = filter_public_headers(headers);
         assert!(
-            !filtered.iter().any(|(k, v)| k == "Authorization" && v.trim().eq_ignore_ascii_case("Bearer")),
+            !filtered
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v.trim().eq_ignore_ascii_case("Bearer")),
             "пустой Authorization не должен отправляться"
         );
         let headers = quota::zai_billing_headers("token-abc");
         let filtered = filter_public_headers(headers);
-        assert!(filtered.iter().any(|(k, v)| k == "Authorization" && v == "Bearer token-abc"));
+        assert!(filtered
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v == "Bearer token-abc"));
     }
 
     #[test]
@@ -656,13 +694,23 @@ mod tests {
         let home = std::env::temp_dir().join(format!("zsw-act-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
         let today = "2030-01-02";
-        assert!(!activation_sent_today(&home, "user-a", "mid-1", "3.17.1", today));
+        assert!(!activation_sent_today(
+            &home, "user-a", "mid-1", "3.17.1", today
+        ));
         mark_activation_sent(&home, "user-a", "mid-1", "3.17.1", today);
-        assert!(activation_sent_today(&home, "user-a", "mid-1", "3.17.1", today));
+        assert!(activation_sent_today(
+            &home, "user-a", "mid-1", "3.17.1", today
+        ));
         // другой аккаунт/девайс/версия — другой ключ
-        assert!(!activation_sent_today(&home, "user-b", "mid-1", "3.17.1", today));
-        assert!(!activation_sent_today(&home, "user-a", "mid-2", "3.17.1", today));
-        assert!(!activation_sent_today(&home, "user-a", "mid-1", "3.18.0", today));
+        assert!(!activation_sent_today(
+            &home, "user-b", "mid-1", "3.17.1", today
+        ));
+        assert!(!activation_sent_today(
+            &home, "user-a", "mid-2", "3.17.1", today
+        ));
+        assert!(!activation_sent_today(
+            &home, "user-a", "mid-1", "3.18.0", today
+        ));
         // в файле нет сырого deviceMid и user_id
         let raw = std::fs::read_to_string(activation_cache_path(&home)).unwrap();
         assert!(!raw.contains("mid-1"));

@@ -1,4 +1,3 @@
-
 use crate::i18n::{tr, trf};
 use crate::quota;
 use crate::zcrypto;
@@ -35,7 +34,9 @@ fn detached(mut c: std::process::Command) -> std::process::Command {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     c.process_group(0);
-    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     c
 }
 
@@ -44,7 +45,11 @@ pub struct Paths {
     pub data_root: PathBuf,
 }
 
-pub(crate) fn pick_home(zswitch: Option<PathBuf>, userprofile: Option<PathBuf>, home_env: Option<PathBuf>) -> PathBuf {
+pub(crate) fn pick_home(
+    zswitch: Option<PathBuf>,
+    userprofile: Option<PathBuf>,
+    home_env: Option<PathBuf>,
+) -> PathBuf {
     zswitch
         .or(userprofile)
         .or(home_env)
@@ -65,7 +70,11 @@ fn bootstrap_data_base_dir(home: &Path) -> Option<PathBuf> {
     fs::read_to_string(home.join(".zcode").join("v2").join("setting.json"))
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|v| v.get("dataBaseDir").and_then(|d| d.as_str()).map(|s| s.trim().to_string()))
+        .and_then(|v| {
+            v.get("dataBaseDir")
+                .and_then(|d| d.as_str())
+                .map(|s| s.trim().to_string())
+        })
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .filter(|d| d.is_absolute())
@@ -95,19 +104,40 @@ impl Paths {
         Paths { home, data_root }
     }
 
-    pub fn store_dir(&self) -> PathBuf { self.home.join(".zcode-switch") }
-    pub fn accounts_dir(&self) -> PathBuf { self.store_dir().join("accounts") }
-    pub fn settings_file(&self) -> PathBuf { self.store_dir().join("settings.json") }
-    pub fn zcode_dir(&self) -> PathBuf { self.data_root.join(".zcode") }
-    pub fn live_file(&self) -> PathBuf { self.zcode_dir().join("v2").join("credentials.json") }
-    pub fn live_config(&self) -> PathBuf { self.zcode_dir().join("v2").join("config.json") }
-    pub fn live_telemetry(&self) -> PathBuf { self.zcode_dir().join("v2").join("telemetry-state.json") }
-    pub fn live_onboarding(&self) -> PathBuf { self.zcode_dir().join("v2").join("onboarding-record.json") }
-    pub fn live_setting(&self) -> PathBuf { self.home.join(".zcode").join("v2").join("setting.json") }
-    pub fn live_plan_cache(&self) -> PathBuf { self.zcode_dir().join("v2").join("coding-plan-cache.json") }
+    pub fn store_dir(&self) -> PathBuf {
+        self.home.join(".zcode-switch")
+    }
+    pub fn accounts_dir(&self) -> PathBuf {
+        self.store_dir().join("accounts")
+    }
+    pub fn settings_file(&self) -> PathBuf {
+        self.store_dir().join("settings.json")
+    }
+    pub fn zcode_dir(&self) -> PathBuf {
+        self.data_root.join(".zcode")
+    }
+    pub fn live_file(&self) -> PathBuf {
+        self.zcode_dir().join("v2").join("credentials.json")
+    }
+    pub fn live_config(&self) -> PathBuf {
+        self.zcode_dir().join("v2").join("config.json")
+    }
+    pub fn live_telemetry(&self) -> PathBuf {
+        self.zcode_dir().join("v2").join("telemetry-state.json")
+    }
+    pub fn live_onboarding(&self) -> PathBuf {
+        self.zcode_dir().join("v2").join("onboarding-record.json")
+    }
+    pub fn live_setting(&self) -> PathBuf {
+        self.home.join(".zcode").join("v2").join("setting.json")
+    }
+    pub fn live_plan_cache(&self) -> PathBuf {
+        self.zcode_dir().join("v2").join("coding-plan-cache.json")
+    }
 
     pub fn ensure_dirs(&self) -> Result<(), String> {
-        fs::create_dir_all(self.accounts_dir()).map_err(|e| trf("err.store.mk_accounts_dir", &[("e", &e.to_string())]))?;
+        fs::create_dir_all(self.accounts_dir())
+            .map_err(|e| trf("err.store.mk_accounts_dir", &[("e", &e.to_string())]))?;
         Ok(())
     }
 }
@@ -148,13 +178,24 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn launch_after_switch(&self) -> bool { self.launch_after_switch.unwrap_or(true) }
-    pub fn close_to_tray(&self) -> bool { self.close_to_tray.unwrap_or(true) }
-    pub fn hot_switch(&self) -> bool { self.hot_switch.unwrap_or(false) }
-    pub fn auto_claim(&self) -> bool { self.auto_claim.unwrap_or(false) }
+    pub fn launch_after_switch(&self) -> bool {
+        self.launch_after_switch.unwrap_or(true)
+    }
+    pub fn close_to_tray(&self) -> bool {
+        self.close_to_tray.unwrap_or(true)
+    }
+    pub fn hot_switch(&self) -> bool {
+        self.hot_switch.unwrap_or(false)
+    }
+    pub fn auto_claim(&self) -> bool {
+        self.auto_claim.unwrap_or(false)
+    }
     pub fn auth_proxy(&self) -> Option<&str> {
         if self.auth_proxy_on.unwrap_or(false) {
-            self.auth_proxy_url.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            self.auth_proxy_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
         } else {
             None
         }
@@ -242,8 +283,13 @@ pub fn canonical_hash(v: &Value) -> String {
 }
 
 pub fn is_logged_in(v: &Value) -> bool {
-    let Some(map) = v.as_object() else { return false };
-    if map.keys().any(|k| k.starts_with("oauth:") && k.ends_with(":access_token")) {
+    let Some(map) = v.as_object() else {
+        return false;
+    };
+    if map
+        .keys()
+        .any(|k| k.starts_with("oauth:") && k.ends_with(":access_token"))
+    {
         return true;
     }
     map.get("zcodejwttoken")
@@ -257,10 +303,18 @@ pub fn atomic_write(path: &Path, data: &str) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| trf("err.mkdir", &[("e", &e.to_string())]))?;
     }
     let tmp = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
-    fs::write(&tmp, data).map_err(|e| trf("err.write_file", &[("path", &path.display().to_string()), ("e", &e.to_string())]))?;
+    fs::write(&tmp, data).map_err(|e| {
+        trf(
+            "err.write_file",
+            &[("path", &path.display().to_string()), ("e", &e.to_string())],
+        )
+    })?;
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
-        return Err(trf("err.rename_fail", &[("path", &path.display().to_string()), ("e", &e.to_string())]));
+        return Err(trf(
+            "err.rename_fail",
+            &[("path", &path.display().to_string()), ("e", &e.to_string())],
+        ));
     }
     Ok(())
 }
@@ -269,10 +323,24 @@ pub fn read_live(paths: &Paths) -> Result<Option<Value>, String> {
     if !paths.live_file().exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(paths.live_file())
-        .map_err(|e| trf("err.read", &[("path", &paths.live_file().display().to_string()), ("e", &e.to_string())]))?;
-    let v: Value = serde_json::from_str(&raw)
-        .map_err(|e| trf("err.bad_json", &[("path", &paths.live_file().display().to_string()), ("e", &e.to_string())]))?;
+    let raw = fs::read_to_string(paths.live_file()).map_err(|e| {
+        trf(
+            "err.read",
+            &[
+                ("path", &paths.live_file().display().to_string()),
+                ("e", &e.to_string()),
+            ],
+        )
+    })?;
+    let v: Value = serde_json::from_str(&raw).map_err(|e| {
+        trf(
+            "err.bad_json",
+            &[
+                ("path", &paths.live_file().display().to_string()),
+                ("e", &e.to_string()),
+            ],
+        )
+    })?;
     if !v.is_object() {
         return Err(tr("err.store.not_object"));
     }
@@ -285,11 +353,19 @@ pub fn read_live_config(paths: &Paths) -> Option<Value> {
 }
 
 pub(crate) fn new_gen_provider_config(data_root: &Path) -> bool {
-    data_root.join(".zcode").join("v2").join("provider_config.json").exists()
+    data_root
+        .join(".zcode")
+        .join("v2")
+        .join("provider_config.json")
+        .exists()
 }
 
 fn snapshot_config_from_live(paths: &Paths) -> Option<Value> {
-    if new_gen_provider_config(&paths.data_root) { None } else { read_live_config(paths) }
+    if new_gen_provider_config(&paths.data_root) {
+        None
+    } else {
+        read_live_config(paths)
+    }
 }
 
 pub fn write_live(paths: &Paths, v: &Value) -> Result<(), String> {
@@ -456,7 +532,10 @@ pub fn client_path_candidates(os: &str) -> Vec<String> {
     match os {
         "macos" => vec![
             "/Applications/ZCode.app/Contents/MacOS/ZCode".to_string(),
-            format!("{}/Applications/ZCode.app/Contents/MacOS/ZCode", std::env::var("HOME").unwrap_or_default()),
+            format!(
+                "{}/Applications/ZCode.app/Contents/MacOS/ZCode",
+                std::env::var("HOME").unwrap_or_default()
+            ),
             "/usr/local/bin/zcode".to_string(),
         ],
         "windows" => vec![
@@ -469,7 +548,10 @@ pub fn client_path_candidates(os: &str) -> Vec<String> {
             "/usr/local/bin/zcode".to_string(),
             "/usr/bin/zcode".to_string(),
             "/opt/ZCode/zcode".to_string(),
-            format!("{}/.local/bin/zcode", std::env::var("HOME").unwrap_or_default()),
+            format!(
+                "{}/.local/bin/zcode",
+                std::env::var("HOME").unwrap_or_default()
+            ),
         ],
     }
 }
@@ -478,7 +560,8 @@ pub fn normalize_zcode_path(raw: &str) -> Option<String> {
     let mut t = raw.trim();
     if t.len() >= 2 {
         let b = t.as_bytes();
-        let quoted = (b[0] == b'"' && b[t.len() - 1] == b'"') || (b[0] == b'\'' && b[t.len() - 1] == b'\'');
+        let quoted =
+            (b[0] == b'"' && b[t.len() - 1] == b'"') || (b[0] == b'\'' && b[t.len() - 1] == b'\'');
         if quoted {
             t = t[1..t.len() - 1].trim();
         }
@@ -512,7 +595,9 @@ pub fn list_accounts(paths: &Paths) -> Result<Vec<Account>, String> {
         return Ok(vec![]);
     }
     let mut out = vec![];
-    for entry in fs::read_dir(&dir).map_err(|e| trf("err.store.list_fail", &[("e", &e.to_string())]))? {
+    for entry in
+        fs::read_dir(&dir).map_err(|e| trf("err.store.list_fail", &[("e", &e.to_string())]))?
+    {
         let entry = entry.map_err(|e| trf("err.store.list_fail", &[("e", &e.to_string())]))?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -541,8 +626,10 @@ pub fn load_account(paths: &Paths, id: &str) -> Result<Account, String> {
         return Err(tr("err.store.bad_id"));
     }
     let path = paths.accounts_dir().join(format!("{id}.json"));
-    let raw = fs::read_to_string(&path).map_err(|_| trf("err.store.no_account_id", &[("id", id)]))?;
-    let mut a: Account = serde_json::from_str(&raw).map_err(|e| trf("err.store.corrupt", &[("e", &e.to_string())]))?;
+    let raw =
+        fs::read_to_string(&path).map_err(|_| trf("err.store.no_account_id", &[("id", id)]))?;
+    let mut a: Account = serde_json::from_str(&raw)
+        .map_err(|e| trf("err.store.corrupt", &[("e", &e.to_string())]))?;
     migrate_account_hash_inplace(&mut a);
     Ok(a)
 }
@@ -607,7 +694,12 @@ pub fn capture_current(paths: &Paths, name: Option<String>) -> Result<Account, S
     Ok(acc)
 }
 
-pub(crate) fn find_same_login(live: &Value, live_hash: &str, accounts: &[Account], home: &Path) -> Option<usize> {
+pub(crate) fn find_same_login(
+    live: &Value,
+    live_hash: &str,
+    accounts: &[Account],
+    home: &Path,
+) -> Option<usize> {
     if let Some(i) = accounts.iter().position(|a| a.hash == live_hash) {
         return Some(i);
     }
@@ -615,12 +707,16 @@ pub(crate) fn find_same_login(live: &Value, live_hash: &str, accounts: &[Account
     if !identity_has_signal(&live_id) {
         return None;
     }
-    accounts.iter().position(|a| {
-        identity_matches(&live_id, &zcrypto::account_identity(&a.credentials, home))
-    })
+    accounts
+        .iter()
+        .position(|a| identity_matches(&live_id, &zcrypto::account_identity(&a.credentials, home)))
 }
 
-fn auto_preserve(paths: &Paths, accounts: &[Account], target_hash: &str) -> Result<Option<String>, String> {
+fn auto_preserve(
+    paths: &Paths,
+    accounts: &[Account],
+    target_hash: &str,
+) -> Result<Option<String>, String> {
     let live = match read_live(paths)? {
         Some(v) if is_logged_in(&v) => v,
         _ => return Ok(None),
@@ -632,7 +728,10 @@ fn auto_preserve(paths: &Paths, accounts: &[Account], target_hash: &str) -> Resu
     if find_same_login(&live, &hash, accounts, &paths.home).is_some() {
         return Ok(None);
     }
-    let name = unique_name(accounts, &format!("Auto {}", Local::now().format("%m-%d %H%M")));
+    let name = unique_name(
+        accounts,
+        &format!("Auto {}", Local::now().format("%m-%d %H%M")),
+    );
     let ts = now_ts();
     let mut acc = Account {
         id: Uuid::new_v4().to_string(),
@@ -663,25 +762,47 @@ fn cred_plain(creds: &Value, key: &str, home: &std::path::Path) -> Option<String
 pub(crate) const JWT_CLOCK_SKEW_MS: i64 = 30_000;
 
 pub(crate) fn account_jwt_expired(creds: &Value, home: &Path) -> bool {
-    let Some(jwt) = cred_plain(creds, "zcodejwttoken", home) else { return false };
-    let Some(exp) = zcrypto::jwt_exp_ms(&jwt) else { return false };
+    let Some(jwt) = cred_plain(creds, "zcodejwttoken", home) else {
+        return false;
+    };
+    let Some(exp) = zcrypto::jwt_exp_ms(&jwt) else {
+        return false;
+    };
     let now_ms = Local::now().timestamp_millis();
     exp <= now_ms + JWT_CLOCK_SKEW_MS
 }
 
 fn sync_live_back_to_source(paths: &Paths, accounts: &[Account]) -> Result<(), String> {
-    let Some(live) = read_live(paths)? else { return Ok(()) };
-    if !is_logged_in(&live) { return Ok(()); }
+    let Some(live) = read_live(paths)? else {
+        return Ok(());
+    };
+    if !is_logged_in(&live) {
+        return Ok(());
+    }
     let live_hash = canonical_hash(&live);
     let live_id = zcrypto::account_identity(&live, &paths.home);
     let has_id = identity_has_signal(&live_id);
-    let source = accounts.iter().find(|a| a.hash == live_hash).cloned().or_else(|| {
-        if !has_id { return None; }
-        accounts.iter().find(|a| {
-            identity_matches(&live_id, &zcrypto::account_identity(&a.credentials, &paths.home))
-        }).cloned()
-    });
-    let Some(mut src) = source else { return Ok(()); };
+    let source = accounts
+        .iter()
+        .find(|a| a.hash == live_hash)
+        .cloned()
+        .or_else(|| {
+            if !has_id {
+                return None;
+            }
+            accounts
+                .iter()
+                .find(|a| {
+                    identity_matches(
+                        &live_id,
+                        &zcrypto::account_identity(&a.credentials, &paths.home),
+                    )
+                })
+                .cloned()
+        });
+    let Some(mut src) = source else {
+        return Ok(());
+    };
     let mut changed = false;
     if src.credentials != live {
         src.credentials = live.clone();
@@ -732,16 +853,23 @@ fn read_live_family_selection(paths: &Paths) -> Option<Value> {
             out.insert((*k).to_string(), val.clone());
         }
     }
-    (!out.is_empty()).then(|| Value::Object(out))
+    (!out.is_empty()).then_some(Value::Object(out))
 }
 
 // ZCode 3.14+ хранит в setting.json выбор подключения аккаунта (modes/connections/selected keys);
 // при переключении восстанавливаем из снимка только эти три ключа, остальное не трогаем
 fn restore_family_selection(paths: &Paths, target: &Account) {
-    let Some(sel) = target.family_selection.as_ref() else { return };
+    let Some(sel) = target.family_selection.as_ref() else {
+        return;
+    };
     let Some(_provider) = cred_plain(&target.credentials, "oauth:active_provider", &paths.home)
-        .filter(|p| p == "bigmodel" || p == "zai") else { return };
-    let Ok(raw) = fs::read_to_string(paths.live_setting()) else { return };
+        .filter(|p| p == "bigmodel" || p == "zai")
+    else {
+        return;
+    };
+    let Ok(raw) = fs::read_to_string(paths.live_setting()) else {
+        return;
+    };
     let Ok(mut v) = serde_json::from_str::<Value>(&raw) else {
         eprintln!("setting.json 解析失败,跳过 family selection 恢复");
         return;
@@ -759,13 +887,20 @@ fn restore_family_selection(paths: &Paths, target: &Account) {
 
 fn align_family_domain(paths: &Paths, target: &Account) {
     let Some(provider) = cred_plain(&target.credentials, "oauth:active_provider", &paths.home)
-        .filter(|p| p == "bigmodel" || p == "zai") else { return; };
-    let Ok(raw) = fs::read_to_string(paths.live_setting()) else { return; };
+        .filter(|p| p == "bigmodel" || p == "zai")
+    else {
+        return;
+    };
+    let Ok(raw) = fs::read_to_string(paths.live_setting()) else {
+        return;
+    };
     let Ok(mut v) = serde_json::from_str::<Value>(&raw) else {
         eprintln!("setting.json 解析失败,跳过 family domain 对齐");
         return;
     };
-    let Some(obj) = v.as_object_mut() else { return; };
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
     let now_ms = chrono::Local::now().timestamp_millis();
     obj.insert("providerFamilyDomain".into(), Value::String(provider));
     obj.insert("providerFamilyDomainUpdatedAt".into(), Value::from(now_ms));
@@ -776,17 +911,33 @@ fn align_family_domain(paths: &Paths, target: &Account) {
 }
 
 fn rematerialize_wiped_builtins(paths: &Paths, target: &Account) {
-    if target.config.is_none() { return; }
+    if target.config.is_none() {
+        return;
+    }
     let Some(provider) = cred_plain(&target.credentials, "oauth:active_provider", &paths.home)
-        .filter(|p| p == "bigmodel" || p == "zai") else { return; };
+        .filter(|p| p == "bigmodel" || p == "zai")
+    else {
+        return;
+    };
     let Some(jwt) = cred_plain(&target.credentials, "zcodejwttoken", &paths.home)
-        .filter(|j| !j.trim().is_empty()) else { return; };
-    let Some(live) = read_live_config(paths) else { return; };
-    let mut out = match live.as_object() { Some(o) => o.clone(), None => return };
-    let Some(live_prov) = out.get("provider").and_then(|v| v.as_object()) else { return };
+        .filter(|j| !j.trim().is_empty())
+    else {
+        return;
+    };
+    let Some(live) = read_live_config(paths) else {
+        return;
+    };
+    let mut out = match live.as_object() {
+        Some(o) => o.clone(),
+        None => return,
+    };
+    let Some(live_prov) = out.get("provider").and_then(|v| v.as_object()) else {
+        return;
+    };
 
     let wiped = |cur: &Value| {
-        cur.get("options").and_then(|o| o.get("apiKey"))
+        cur.get("options")
+            .and_then(|o| o.get("apiKey"))
             .map(|k| k.as_str().map(str::trim).unwrap_or("").is_empty())
             .unwrap_or(true)
             || (cur.get("enabled").and_then(|e| e.as_bool()) == Some(false)
@@ -800,10 +951,15 @@ fn rematerialize_wiped_builtins(paths: &Paths, target: &Account) {
     let has_candidate = live_prov
         .iter()
         .any(|(id, cur)| id.starts_with(&family_prefix) && wiped(cur));
-    if !has_candidate { return; }
+    if !has_candidate {
+        return;
+    }
 
     let at_key = format!("oauth:{provider}:access_token");
-    let access_token = match (in_sandbox(), cred_plain(&target.credentials, &at_key, &paths.home)) {
+    let access_token = match (
+        in_sandbox(),
+        cred_plain(&target.credentials, &at_key, &paths.home),
+    ) {
         (true, _) => String::new(),
         (false, Some(at)) => at.trim().to_string(),
         (false, None) => String::new(),
@@ -814,15 +970,26 @@ fn rematerialize_wiped_builtins(paths: &Paths, target: &Account) {
         access_token
     };
     let fresh = crate::oauth::assemble_config(&provider, &jwt, &access_token);
-    let Some(fresh_map) = fresh.get("provider").and_then(|v| v.as_object()) else { return; };
+    let Some(fresh_map) = fresh.get("provider").and_then(|v| v.as_object()) else {
+        return;
+    };
     let mut live_prov = live_prov.clone();
     let mut changed = false;
     for (id, fresh_entry) in fresh_map {
-        let Some(cur) = live_prov.get(id) else { continue; };
-        if !wiped(cur) { continue; }
-        let Some(new_key) = fresh_entry.pointer("/options/apiKey")
-            .and_then(|k| k.as_str()).map(str::trim)
-            .filter(|k| !k.is_empty()) else { continue; };
+        let Some(cur) = live_prov.get(id) else {
+            continue;
+        };
+        if !wiped(cur) {
+            continue;
+        }
+        let Some(new_key) = fresh_entry
+            .pointer("/options/apiKey")
+            .and_then(|k| k.as_str())
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        else {
+            continue;
+        };
         let mut patched = cur.clone();
         if let Some(opts) = patched.get_mut("options").and_then(|o| o.as_object_mut()) {
             opts.insert("apiKey".into(), Value::String(new_key.to_string()));
@@ -844,7 +1011,11 @@ fn rematerialize_wiped_builtins(paths: &Paths, target: &Account) {
     }
 }
 
-fn run_switch_probe(paths: &Paths, target: &Account, mid: Option<String>) -> Option<crate::probe::ProbeOutcome> {
+fn run_switch_probe(
+    paths: &Paths,
+    target: &Account,
+    mid: Option<String>,
+) -> Option<crate::probe::ProbeOutcome> {
     if in_sandbox() || !is_logged_in(&target.credentials) {
         return None;
     }
@@ -859,12 +1030,21 @@ fn run_switch_probe(paths: &Paths, target: &Account, mid: Option<String>) -> Opt
 }
 
 fn probe_config_base(paths: &Paths, target: &Account) -> Option<Value> {
-    if target.config.is_none() { return None; }
-    if new_gen_provider_config(&paths.data_root) { target.config.clone() }
-    else { read_live_config(paths).or_else(|| target.config.clone()) }
+    target.config.as_ref()?;
+    if new_gen_provider_config(&paths.data_root) {
+        target.config.clone()
+    } else {
+        read_live_config(paths).or_else(|| target.config.clone())
+    }
 }
 
-pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool) -> Result<SwitchResult, String> {
+pub fn switch_to(
+    paths: &Paths,
+    id: &str,
+    force: bool,
+    restart: bool,
+    hot: bool,
+) -> Result<SwitchResult, String> {
     let target = load_account(paths, id)?;
     let accounts = list_accounts(paths)?;
     let live = read_live(paths)?;
@@ -1003,7 +1183,9 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
 const RELAY_PASS_KEY: &str = "web-remote-control:external-relay:pass_hash";
 
 fn inject_relay_pass_hash(creds: &Value, relay: Option<&Value>) -> Value {
-    let Some(relay) = relay else { return creds.clone() };
+    let Some(relay) = relay else {
+        return creds.clone();
+    };
     let mut out = creds.clone();
     if let Some(map) = out.as_object_mut() {
         map.insert(RELAY_PASS_KEY.to_string(), relay.clone());
@@ -1019,7 +1201,9 @@ fn current_relay_pass(paths: &Paths) -> Option<Value> {
 }
 
 fn backfill_relay_pass_hash(paths: &Paths, target_id: &str, creds: &Value) {
-    let Ok(mut acc) = load_account(paths, target_id) else { return };
+    let Ok(mut acc) = load_account(paths, target_id) else {
+        return;
+    };
     if acc.credentials != *creds {
         acc.credentials = creds.clone();
         acc.updated_at = now_ts();
@@ -1040,7 +1224,11 @@ fn hot_swap_verified(paths: &Paths, target: &Account, creds: &Value) -> Result<(
         }
     };
     let mut last_err: Option<String> = None;
-    let backoff = |attempt: u32| std::thread::sleep(std::time::Duration::from_millis(250 + u64::from(attempt) * 250));
+    let backoff = |attempt: u32| {
+        std::thread::sleep(std::time::Duration::from_millis(
+            250 + u64::from(attempt) * 250,
+        ))
+    };
     for attempt in 0..3u32 {
         if let Err(e) = write_live(paths, creds) {
             last_err = Some(trf("err.write", &[("e", &e)]));
@@ -1080,8 +1268,18 @@ fn identity_has_signal(id: &zcrypto::Identity) -> bool {
 fn identity_matches(a: &zcrypto::Identity, b: &zcrypto::Identity) -> bool {
     let norm = |s: &str| s.trim().to_lowercase();
     let opt = |s: &Option<String>| norm(s.as_deref().unwrap_or("")).to_string();
-    let (au, ae, ap, an) = (opt(&a.user_id), opt(&a.email), norm(&a.provider), opt(&a.username));
-    let (bu, be, bp, bn) = (opt(&b.user_id), opt(&b.email), norm(&b.provider), opt(&b.username));
+    let (au, ae, ap, an) = (
+        opt(&a.user_id),
+        opt(&a.email),
+        norm(&a.provider),
+        opt(&a.username),
+    );
+    let (bu, be, bp, bn) = (
+        opt(&b.user_id),
+        opt(&b.email),
+        norm(&b.provider),
+        opt(&b.username),
+    );
     if !au.is_empty() && !bu.is_empty() {
         if au != bu {
             return false;
@@ -1111,7 +1309,10 @@ pub fn rename_account(paths: &Paths, id: &str, new_name: &str) -> Result<Account
         .iter()
         .find(|a| a.id != id && a.name.eq_ignore_ascii_case(name))
     {
-        return Err(trf("err.name.taken", &[("name", name), ("other", &other.name)]));
+        return Err(trf(
+            "err.name.taken",
+            &[("name", name), ("other", &other.name)],
+        ));
     }
     acc.name = name.to_string();
     acc.updated_at = now_ts();
@@ -1155,7 +1356,11 @@ pub fn update_account_from_live(paths: &Paths, id: &str) -> Result<Account, Stri
 }
 
 fn live_quota_config(paths: &Paths) -> Option<Value> {
-    if new_gen_provider_config(&paths.data_root) { None } else { read_live_config(paths) }
+    if new_gen_provider_config(&paths.data_root) {
+        None
+    } else {
+        read_live_config(paths)
+    }
 }
 
 pub fn live_quota(paths: &Paths) -> Result<quota::QuotaOverview, String> {
@@ -1215,7 +1420,10 @@ pub fn write_live_device_mid(paths: &Paths, mid: &str) -> Result<(), String> {
     }
     if v.get("deviceMid").and_then(|m| m.as_str()) != Some(mid) {
         v["deviceMid"] = json!(mid);
-        atomic_write(&paths.live_telemetry(), &(serde_json::to_string(&v).unwrap_or_default() + "\n"))?;
+        atomic_write(
+            &paths.live_telemetry(),
+            &(serde_json::to_string(&v).unwrap_or_default() + "\n"),
+        )?;
     }
     mirror_device_mid_to_onboarding(paths, mid);
     Ok(())
@@ -1224,10 +1432,15 @@ pub fn write_live_device_mid(paths: &Paths, mid: &str) -> Result<(), String> {
 // ZCode 3.14+ хранит deviceMid в двух файлах (telemetry-state.json и onboarding-record.json);
 // зеркалим только в существующий файл, уже содержащий ключ deviceMid — ничего не создаём
 fn mirror_device_mid_to_onboarding(paths: &Paths, mid: &str) {
-    let Ok(raw) = fs::read_to_string(paths.live_onboarding()) else { return };
-    let Ok(mut v) = serde_json::from_str::<Value>(&raw) else { return };
+    let Ok(raw) = fs::read_to_string(paths.live_onboarding()) else {
+        return;
+    };
+    let Ok(mut v) = serde_json::from_str::<Value>(&raw) else {
+        return;
+    };
     let Some(obj) = v.as_object_mut() else { return };
-    if !obj.contains_key("deviceMid") || obj.get("deviceMid").and_then(|m| m.as_str()) == Some(mid) {
+    if !obj.contains_key("deviceMid") || obj.get("deviceMid").and_then(|m| m.as_str()) == Some(mid)
+    {
         return;
     }
     obj.insert("deviceMid".into(), Value::String(mid.to_string()));
@@ -1238,17 +1451,28 @@ fn mirror_device_mid_to_onboarding(paths: &Paths, mid: &str) {
 }
 
 fn adopt_virtual_device_mid(paths: &Paths, acc: &mut Account) -> Result<(), String> {
-    if acc.virtual_device_mid.as_deref().map_or(false, |m| !m.trim().is_empty()) {
+    if acc
+        .virtual_device_mid
+        .as_deref()
+        .is_some_and(|m| !m.trim().is_empty())
+    {
         return Ok(());
     }
     let live_mid: Option<String> = fs::read_to_string(paths.live_telemetry())
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.get("deviceMid").and_then(|m| m.as_str()).map(String::from))
+        .and_then(|v| {
+            v.get("deviceMid")
+                .and_then(|m| m.as_str())
+                .map(String::from)
+        })
         .filter(|m| !m.trim().is_empty());
     let taken = |m: &str| {
         list_accounts(paths)
-            .map(|accs| accs.iter().any(|a| a.virtual_device_mid.as_deref() == Some(m)))
+            .map(|accs| {
+                accs.iter()
+                    .any(|a| a.virtual_device_mid.as_deref() == Some(m))
+            })
             .unwrap_or(false)
     };
     let mid = match live_mid {
@@ -1265,7 +1489,8 @@ const ARMS_DEFAULT_STORE_FILE: &str = "ZGVmYXVsdA.json";
 pub fn new_arms_uid() -> String {
     const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let uuid = Uuid::new_v4();
-    let suffix: String = uuid.as_bytes()
+    let suffix: String = uuid
+        .as_bytes()
         .iter()
         .take(16)
         .map(|b| ALPHABET[(*b as usize) % 36] as char)
@@ -1281,14 +1506,23 @@ fn arms_store_dirs_from(
     let mut out: Vec<PathBuf> = Vec::new();
     let mut push_if_new = |dir: PathBuf| {
         let lowered = dir.to_string_lossy().to_lowercase();
-        if !out.iter().any(|d| d.to_string_lossy().to_lowercase() == lowered) {
+        if !out
+            .iter()
+            .any(|d| d.to_string_lossy().to_lowercase() == lowered)
+        {
             out.push(dir);
         }
     };
     let mut candidates: Vec<PathBuf> = Vec::new();
     let groups: [(Option<PathBuf>, &[&str]); 3] = [
-        (win_appdata, &["ZCode", "zcode", "ZCode Preview", "ZCode Dev"]),
-        (mac_appsupport, &["ZCode", "zcode", "ZCode Preview", "ZCode Dev"]),
+        (
+            win_appdata,
+            &["ZCode", "zcode", "ZCode Preview", "ZCode Dev"],
+        ),
+        (
+            mac_appsupport,
+            &["ZCode", "zcode", "ZCode Preview", "ZCode Dev"],
+        ),
         (unix_base, &["zcode", "ZCode"]),
     ];
     for (base, names) in groups {
@@ -1342,7 +1576,11 @@ fn arms_store_dirs_for(paths: &Paths) -> Vec<PathBuf> {
         std::env::var("XDG_CONFIG_HOME")
             .ok()
             .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config"))),
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".config"))
+            }),
     );
     arms_store_dirs_from(appdata, mac_base, unix_base)
 }
@@ -1374,7 +1612,11 @@ fn read_live_arms_uid_from(dirs: &[PathBuf]) -> Option<String> {
         fs::read_to_string(f)
             .ok()
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.get("_arms_uid").and_then(|u| u.as_str()).map(String::from))
+            .and_then(|v| {
+                v.get("_arms_uid")
+                    .and_then(|u| u.as_str())
+                    .map(String::from)
+            })
             .filter(|u| !u.trim().is_empty())
     };
     let mut files: Vec<PathBuf> = Vec::new();
@@ -1385,7 +1627,11 @@ fn read_live_arms_uid_from(dirs: &[PathBuf]) -> Option<String> {
                 .map(|e| e.path())
                 .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
                 .collect();
-            jsons.sort_by_key(|p| !p.file_name().map(|n| n == ARMS_DEFAULT_STORE_FILE).unwrap_or(false));
+            jsons.sort_by_key(|p| {
+                !p.file_name()
+                    .map(|n| n == ARMS_DEFAULT_STORE_FILE)
+                    .unwrap_or(false)
+            });
             files.extend(jsons);
         }
     }
@@ -1423,7 +1669,9 @@ pub fn write_live_arms_uid_to(dirs: &[PathBuf], uid: &str) -> Result<(), String>
             let obj = v.as_object_mut().unwrap();
             obj.insert("_arms_uid".into(), json!(uid));
             obj.remove("_arms_session");
-            if let Err(e) = atomic_write(&f, &(serde_json::to_string(&v).unwrap_or_default() + "\n")) {
+            if let Err(e) =
+                atomic_write(&f, &(serde_json::to_string(&v).unwrap_or_default() + "\n"))
+            {
                 first_err.get_or_insert(e);
             }
         }
@@ -1439,13 +1687,20 @@ fn write_live_arms_uid(paths: &Paths, uid: &str) -> Result<(), String> {
 }
 
 fn adopt_virtual_arms_uid(paths: &Paths, acc: &mut Account) -> Result<(), String> {
-    if acc.virtual_arms_uid.as_deref().is_some_and(|u| !u.trim().is_empty()) {
+    if acc
+        .virtual_arms_uid
+        .as_deref()
+        .is_some_and(|u| !u.trim().is_empty())
+    {
         return Ok(());
     }
     let live_uid = read_live_arms_uid_from(&arms_store_dirs_for(paths));
     let taken = |u: &str| {
         list_accounts(paths)
-            .map(|accs| accs.iter().any(|a| a.virtual_arms_uid.as_deref() == Some(u)))
+            .map(|accs| {
+                accs.iter()
+                    .any(|a| a.virtual_arms_uid.as_deref() == Some(u))
+            })
             .unwrap_or(false)
     };
     let uid = match live_uid {
@@ -1481,7 +1736,10 @@ fn import_candidates(v: &Value) -> Result<Vec<ImportCandidate>, String> {
             .ok_or(tr("err.bundle.no_accounts"))?;
         let mut out = vec![];
         for item in arr {
-            let creds = item.get("credentials").cloned().ok_or(tr("err.bundle.no_creds"))?;
+            let creds = item
+                .get("credentials")
+                .cloned()
+                .ok_or(tr("err.bundle.no_creds"))?;
             out.push((
                 item.get("name").and_then(|n| n.as_str()).map(String::from),
                 creds,
@@ -1494,7 +1752,10 @@ fn import_candidates(v: &Value) -> Result<Vec<ImportCandidate>, String> {
 }
 
 pub fn import_values(paths: &Paths, files: &[(String, Value)]) -> Result<ImportReport, String> {
-    let mut report = ImportReport { picked: true, ..Default::default() };
+    let mut report = ImportReport {
+        picked: true,
+        ..Default::default()
+    };
     let accounts = list_accounts(paths)?;
 
     let mut new_accounts: Vec<Account> = vec![];
@@ -1503,23 +1764,33 @@ pub fn import_values(paths: &Paths, files: &[(String, Value)]) -> Result<ImportR
         let cands = match import_candidates(v) {
             Ok(c) => c,
             Err(e) => {
-                report.errors.push(trf("err.import.wrap", &[("fname", fname.as_str()), ("e", e.as_str())]));
+                report.errors.push(trf(
+                    "err.import.wrap",
+                    &[("fname", fname.as_str()), ("e", e.as_str())],
+                ));
                 continue;
             }
         };
         for (name_opt, creds, config_opt) in cands {
             if !is_logged_in(&creds) {
-                report.skipped.push(trf("err.import.no_creds", &[("fname", fname.as_str())]));
+                report
+                    .skipped
+                    .push(trf("err.import.no_creds", &[("fname", fname.as_str())]));
                 continue;
             }
             let hash = canonical_hash(&creds);
-            if accounts.iter().any(|a| a.hash == hash) || new_accounts.iter().any(|a| a.hash == hash) {
-                report.skipped.push(trf("err.import.dup", &[("fname", fname.as_str())]));
+            if accounts.iter().any(|a| a.hash == hash)
+                || new_accounts.iter().any(|a| a.hash == hash)
+            {
+                report
+                    .skipped
+                    .push(trf("err.import.dup", &[("fname", fname.as_str())]));
                 continue;
             }
             let base_name = name_opt.unwrap_or_else(|| {
                 let id = zcrypto::account_identity(&creds, &paths.home);
-                id.label().unwrap_or_else(|| format!("Import {}", Local::now().format("%m-%d %H%M")))
+                id.label()
+                    .unwrap_or_else(|| format!("Import {}", Local::now().format("%m-%d %H%M")))
             });
             let name = unique_name(&accounts, &base_name);
             let ts = now_ts();
@@ -1602,14 +1873,21 @@ mod tests {
     fn sandbox(tag: &str) -> (PathBuf, Paths) {
         let home = std::env::temp_dir().join(format!("zsw-test-{}-{}", tag, Uuid::new_v4()));
         fs::create_dir_all(home.join(".zcode").join("v2")).unwrap();
-        let paths = Paths { home: home.clone(), data_root: home.clone() };
+        let paths = Paths {
+            home: home.clone(),
+            data_root: home.clone(),
+        };
         (home, paths)
     }
 
     #[test]
     fn device_mid_written_to_telemetry_and_onboarding() {
         let (home, paths) = sandbox("dmid");
-        fs::write(paths.live_telemetry(), r#"{"deviceMid":"A","lastDailyActiveDate":"2026-10-02"}"#).unwrap();
+        fs::write(
+            paths.live_telemetry(),
+            r#"{"deviceMid":"A","lastDailyActiveDate":"2026-10-02"}"#,
+        )
+        .unwrap();
         let onb = r#"{
   "version": 2,
   "deviceMid": "A",
@@ -1619,10 +1897,12 @@ mod tests {
 }"#;
         fs::write(paths.live_onboarding(), onb).unwrap();
         write_live_device_mid(&paths, "B").unwrap();
-        let t: Value = serde_json::from_str(&fs::read_to_string(paths.live_telemetry()).unwrap()).unwrap();
+        let t: Value =
+            serde_json::from_str(&fs::read_to_string(paths.live_telemetry()).unwrap()).unwrap();
         assert_eq!(t["deviceMid"], json!("B"));
         assert_eq!(t["lastDailyActiveDate"], json!("2026-10-02"));
-        let o: Value = serde_json::from_str(&fs::read_to_string(paths.live_onboarding()).unwrap()).unwrap();
+        let o: Value =
+            serde_json::from_str(&fs::read_to_string(paths.live_onboarding()).unwrap()).unwrap();
         assert_eq!(o["deviceMid"], json!("B"));
         assert_eq!(o["version"], json!(2));
         assert_eq!(o["entries"][0]["userId"], json!("u1"));
@@ -1633,7 +1913,10 @@ mod tests {
     fn onboarding_without_device_mid_untouched_and_absent_not_created() {
         let (home, paths) = sandbox("dmid2");
         write_live_device_mid(&paths, "B").unwrap();
-        assert!(!paths.live_onboarding().exists(), "onboarding file must not be created");
+        assert!(
+            !paths.live_onboarding().exists(),
+            "onboarding file must not be created"
+        );
         let body = r#"{
   "version": 2,
   "entries": []
@@ -1663,13 +1946,17 @@ mod tests {
     #[test]
     fn family_selection_capture_restore_roundtrip() {
         let (home, paths) = sandbox("fsel");
-        fs::write(paths.live_setting(), r#"{
+        fs::write(
+            paths.live_setting(),
+            r#"{
   "locale": "zh",
   "providerFamilyDomain": "zai",
   "modelProviderFamilyModes": { "zai": "oauth" },
   "providerFamilyConnectionSelections": { "zai": { "kind": "individual-coding-plan" } },
   "modelProviderFamilySelectedKeys": { "zai": "coding-plan:builtin:zai-start-plan" }
-}"#).unwrap();
+}"#,
+        )
+        .unwrap();
         let sel = read_live_family_selection(&paths).unwrap();
         let keys: Vec<String> = sel.as_object().unwrap().keys().cloned().collect();
         assert_eq!(keys.len(), 3, "exactly 3 selection keys: {keys:?}");
@@ -1677,17 +1964,32 @@ mod tests {
         assert!(keys.contains(&"providerFamilyConnectionSelections".to_string()));
         assert!(keys.contains(&"modelProviderFamilySelectedKeys".to_string()));
 
-        fs::write(paths.live_setting(), r#"{
+        fs::write(
+            paths.live_setting(),
+            r#"{
   "locale": "en",
   "providerFamilyDomain": "bigmodel"
-}"#).unwrap();
+}"#,
+        )
+        .unwrap();
         restore_family_selection(&paths, &family_acc(sel, "zai"));
-        let v: Value = serde_json::from_str(&fs::read_to_string(paths.live_setting()).unwrap()).unwrap();
+        let v: Value =
+            serde_json::from_str(&fs::read_to_string(paths.live_setting()).unwrap()).unwrap();
         assert_eq!(v["locale"], json!("en"), "foreign keys preserved");
-        assert_eq!(v["providerFamilyDomain"], json!("bigmodel"), "domain stays with align_family_domain");
+        assert_eq!(
+            v["providerFamilyDomain"],
+            json!("bigmodel"),
+            "domain stays with align_family_domain"
+        );
         assert_eq!(v["modelProviderFamilyModes"]["zai"], json!("oauth"));
-        assert_eq!(v["providerFamilyConnectionSelections"]["zai"]["kind"], json!("individual-coding-plan"));
-        assert_eq!(v["modelProviderFamilySelectedKeys"]["zai"], json!("coding-plan:builtin:zai-start-plan"));
+        assert_eq!(
+            v["providerFamilyConnectionSelections"]["zai"]["kind"],
+            json!("individual-coding-plan")
+        );
+        assert_eq!(
+            v["modelProviderFamilySelectedKeys"]["zai"],
+            json!("coding-plan:builtin:zai-start-plan")
+        );
         fs::remove_dir_all(&home).ok();
     }
 
@@ -1697,8 +1999,12 @@ mod tests {
         fs::write(paths.live_setting(), r#"{"locale":"en"}"#).unwrap();
         let sel = json!({"modelProviderFamilyModes": {"zai": "oauth"}});
         restore_family_selection(&paths, &family_acc(sel, "other"));
-        let v: Value = serde_json::from_str(&fs::read_to_string(paths.live_setting()).unwrap()).unwrap();
-        assert!(v.get("modelProviderFamilyModes").is_none(), "unknown provider: setting.json untouched");
+        let v: Value =
+            serde_json::from_str(&fs::read_to_string(paths.live_setting()).unwrap()).unwrap();
+        assert!(
+            v.get("modelProviderFamilyModes").is_none(),
+            "unknown provider: setting.json untouched"
+        );
         fs::remove_dir_all(&home).ok();
     }
 
@@ -1710,6 +2016,9 @@ mod tests {
         let acc2: Account = serde_json::from_str(
             r#"{"id":"x","name":"n","created_at":"","updated_at":"","hash":"h","credentials":{},"family_selection":{"modelProviderFamilyModes":{"zai":"oauth"}}}"#,
         ).unwrap();
-        assert_eq!(acc2.family_selection.unwrap()["modelProviderFamilyModes"]["zai"], json!("oauth"));
+        assert_eq!(
+            acc2.family_selection.unwrap()["modelProviderFamilyModes"]["zai"],
+            json!("oauth")
+        );
     }
 }

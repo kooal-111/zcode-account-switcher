@@ -1,8 +1,8 @@
 pub mod cipher;
-pub mod cli;
-pub mod i18n;
 mod claim;
+pub mod cli;
 mod flowlog;
+pub mod i18n;
 mod oauth;
 mod probe;
 mod quota;
@@ -74,20 +74,62 @@ fn tray_menu_inner(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         Err(e) => {
             eprintln!("tray state error: {e}");
             return MenuBuilder::new(app)
-                .item(&MenuItem::with_id(app, "show", &i18n::tr("tray.show"), true, None::<&str>)?)
-                .item(&MenuItem::with_id(app, "quit", &i18n::tr("tray.quit"), true, None::<&str>)?)
+                .item(&MenuItem::with_id(
+                    app,
+                    "show",
+                    i18n::tr("tray.show"),
+                    true,
+                    None::<&str>,
+                )?)
+                .item(&MenuItem::with_id(
+                    app,
+                    "quit",
+                    i18n::tr("tray.quit"),
+                    true,
+                    None::<&str>,
+                )?)
                 .build();
         }
     };
 
     let b = MenuBuilder::new(app)
-        .item(&MenuItem::with_id(app, "show", &i18n::tr("tray.show"), true, None::<&str>)?)
-        .item(&MenuItem::with_id(app, "capture", &i18n::tr("tray.capture"), state.live_logged_in, None::<&str>)?)
+        .item(&MenuItem::with_id(
+            app,
+            "show",
+            i18n::tr("tray.show"),
+            true,
+            None::<&str>,
+        )?)
+        .item(&MenuItem::with_id(
+            app,
+            "capture",
+            i18n::tr("tray.capture"),
+            state.live_logged_in,
+            None::<&str>,
+        )?)
         .separator()
-        .item(&MenuItem::with_id(app, "launch", &i18n::tr("tray.launch"), state.zcode_path_ok && !state.zcode_running, None::<&str>)?)
-        .item(&MenuItem::with_id(app, "kill", &i18n::tr("tray.kill"), state.zcode_running, None::<&str>)?)
+        .item(&MenuItem::with_id(
+            app,
+            "launch",
+            i18n::tr("tray.launch"),
+            state.zcode_path_ok && !state.zcode_running,
+            None::<&str>,
+        )?)
+        .item(&MenuItem::with_id(
+            app,
+            "kill",
+            i18n::tr("tray.kill"),
+            state.zcode_running,
+            None::<&str>,
+        )?)
         .separator()
-        .item(&MenuItem::with_id(app, "quit", &i18n::tr("tray.quit"), true, None::<&str>)?);
+        .item(&MenuItem::with_id(
+            app,
+            "quit",
+            i18n::tr("tray.quit"),
+            true,
+            None::<&str>,
+        )?);
     b.build()
 }
 
@@ -104,7 +146,13 @@ pub fn rebuild_tray(app: &AppHandle) {
                         .find(|a| a.is_active)
                         .map(|a| a.name.clone())
                         .or_else(|| s.live_identity.as_ref().and_then(|i| i.label()))
-                        .unwrap_or_else(|| if s.live_logged_in { i18n::tr("tray.unsaved") } else { i18n::tr("tray.logged_out") });
+                        .unwrap_or_else(|| {
+                            if s.live_logged_in {
+                                i18n::tr("tray.unsaved")
+                            } else {
+                                i18n::tr("tray.logged_out")
+                            }
+                        });
                     format!("Z·SWITCH · {cur}")
                 }
                 Err(_) => "Z·SWITCH".into(),
@@ -137,7 +185,11 @@ fn run_tray_action(app: AppHandle, action: String) {
             "capture" => store::capture_current(&paths, None).map(|a| json!({ "name": a.name })),
             "launch" => {
                 let (p, ok) = effective_zcode_path(&paths);
-                if ok { store::launch_zcode(&p).map(|_| json!({})) } else { Err(i18n::trf("err.zcode.path_invalid", &[("p", &p)])) }
+                if ok {
+                    store::launch_zcode(&p).map(|_| json!({}))
+                } else {
+                    Err(i18n::trf("err.zcode.path_invalid", &[("p", &p)]))
+                }
             }
             "kill" => match store::kill_zcode() {
                 Ok(true) => Ok(json!({})),
@@ -204,7 +256,12 @@ async fn update_account_from_live(app: AppHandle, id: String) -> Result<Account,
 }
 
 #[tauri::command]
-async fn switch_to(app: AppHandle, id: String, force: bool, restart: bool) -> Result<SwitchResult, String> {
+async fn switch_to(
+    app: AppHandle,
+    id: String,
+    force: bool,
+    restart: bool,
+) -> Result<SwitchResult, String> {
     let r = tauri::async_runtime::spawn_blocking(move || {
         let _guard = store_guard();
         let paths = Paths::detect();
@@ -243,7 +300,12 @@ async fn claim_preview(id: String) -> Result<Vec<claim::ClaimPlan>, String> {
         let paths = Paths::detect();
         let mid = store::ensure_virtual_device_mid(&paths, &id)?;
         let acc = load_account(&paths, &id)?;
-        claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))
+        claim::preview_plans(
+            &paths.home,
+            &acc.credentials,
+            acc.config.as_ref(),
+            Some(mid),
+        )
     })
     .await
     .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
@@ -285,9 +347,17 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
                 }
                 None => (false, Some(i18n::tr("err.claim.no_user_info"))),
             };
-        let plans =
-            claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))?;
-        Ok(ClaimRefreshResult { plans, activated, activation_error })
+        let plans = claim::preview_plans(
+            &paths.home,
+            &acc.credentials,
+            acc.config.as_ref(),
+            Some(mid),
+        )?;
+        Ok(ClaimRefreshResult {
+            plans,
+            activated,
+            activation_error,
+        })
     })
     .await
     .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
@@ -325,7 +395,11 @@ async fn claim_start(
     .await
     .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?;
     let (acc, mid, plan) = prepared?;
-    let display = if plan.name.is_empty() { plan.plan_id.clone() } else { plan.name.clone() };
+    let display = if plan.name.is_empty() {
+        plan.plan_id.clone()
+    } else {
+        plan.name.clone()
+    };
     let claim_id = uuid::Uuid::new_v4().to_string();
 
     *pending_guard() = Some(PendingClaim {
@@ -345,7 +419,9 @@ async fn claim_start(
 #[tauri::command]
 fn claim_pending_info() -> Result<serde_json::Value, String> {
     let g = pending_guard();
-    let p = g.as_ref().ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
+    let p = g
+        .as_ref()
+        .ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
     Ok(json!({
         "claimId": p.claim_id,
         "accountId": p.account_id,
@@ -487,12 +563,18 @@ async fn oauth_providers() -> Result<Vec<oauth::OAuthProvider>, String> {
 #[tauri::command]
 async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Value, String> {
     if !oauth::OAUTH_PROVIDERS.iter().any(|p| p.id == provider) {
-        return Err(i18n::trf("err.oauth.unknown_provider", &[("provider", &provider)]));
+        return Err(i18n::trf(
+            "err.oauth.unknown_provider",
+            &[("provider", &provider)],
+        ));
     }
     let proxy_url: Option<tauri::Url> = match load_settings(&Paths::detect()).auth_proxy() {
         Some(p) => {
             let norm = oauth::parse_proxy_url(p)?;
-            Some(norm.parse::<tauri::Url>().map_err(|e| i18n::trf("err.proxy.invalid", &[("e", &e.to_string())]))?)
+            Some(
+                norm.parse::<tauri::Url>()
+                    .map_err(|e| i18n::trf("err.proxy.invalid", &[("e", &e.to_string())]))?,
+            )
         }
         None => None,
     };
@@ -501,11 +583,20 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
         let _ = w.close();
     }
     let flow = uuid::Uuid::new_v4().to_string();
-    flowlog::log(&flow, "begin", &format!("provider={provider} proxy={}", if proxy_url.is_some() { "on" } else { "off" }));
+    flowlog::log(
+        &flow,
+        "begin",
+        &format!(
+            "provider={provider} proxy={}",
+            if proxy_url.is_some() { "on" } else { "off" }
+        ),
+    );
     let mid = uuid::Uuid::new_v4().to_string();
     let (p_init, m_init) = (provider.clone(), mid.clone());
-    let init = match tauri::async_runtime::spawn_blocking(move || oauth::init_flow(&p_init, &m_init))
-        .await
+    let init = match tauri::async_runtime::spawn_blocking(move || {
+        oauth::init_flow(&p_init, &m_init)
+    })
+    .await
     {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
@@ -528,7 +619,10 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
         flowlog::log(
             &flow,
             "init-ok",
-            &format!("server_flow={srv_flow} expires_in={expires_in}s interval={}ms", init.poll_interval_ms),
+            &format!(
+                "server_flow={srv_flow} expires_in={expires_in}s interval={}ms",
+                init.poll_interval_ms
+            ),
         );
     }
     let url = init.authorize_url.clone();
@@ -553,12 +647,20 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
     let profile_dir = login_root.join(&flow);
 
     let app2 = app.clone();
-    let (provider2, state2, flow2, mid2) = (provider.clone(), init.state.clone(), flow.clone(), mid.clone());
+    let (provider2, state2, flow2, mid2) = (
+        provider.clone(),
+        init.state.clone(),
+        flow.clone(),
+        mid.clone(),
+    );
     let flow_close = flow.clone();
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         "login",
-        tauri::WebviewUrl::External(url.parse::<tauri::Url>().map_err(|e| i18n::trf("err.oauth.bad_authorize_url", &[("e", &e.to_string())]))?),
+        tauri::WebviewUrl::External(
+            url.parse::<tauri::Url>()
+                .map_err(|e| i18n::trf("err.oauth.bad_authorize_url", &[("e", &e.to_string())]))?,
+        ),
     )
     .title(i18n::tr("title.login"))
     .theme(Some(tauri::Theme::Dark))
@@ -571,32 +673,42 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
         builder = builder.proxy_url(u);
     }
     builder
-    .on_navigation(move |url| {
-        if url.scheme() != "zcode" {
-            return true;
-        }
-        let full = url.to_string();
-        let (app3, p3, s3, f3, m3) = (app2.clone(), provider2.clone(), state2.clone(), flow2.clone(), mid2.clone());
-        tauri::async_runtime::spawn(async move {
-            finish_oauth(&app3, p3, s3, f3, m3, &full).await;
-        });
-        false
-    })
-    .build()
-    .map_err(|e| {
-        let mut pending = pending_oauth_guard();
-        if pending.as_ref().map(|p| p.flow == flow).unwrap_or(false) {
-            *pending = None;
-        }
-        let m = i18n::trf("err.oauth.window", &[("e", &e.to_string())]);
-        flowlog::log(&flow, "window-fail", &m);
-        m
-    })?;
+        .on_navigation(move |url| {
+            if url.scheme() != "zcode" {
+                return true;
+            }
+            let full = url.to_string();
+            let (app3, p3, s3, f3, m3) = (
+                app2.clone(),
+                provider2.clone(),
+                state2.clone(),
+                flow2.clone(),
+                mid2.clone(),
+            );
+            tauri::async_runtime::spawn(async move {
+                finish_oauth(&app3, p3, s3, f3, m3, &full).await;
+            });
+            false
+        })
+        .build()
+        .map_err(|e| {
+            let mut pending = pending_oauth_guard();
+            if pending.as_ref().map(|p| p.flow == flow).unwrap_or(false) {
+                *pending = None;
+            }
+            let m = i18n::trf("err.oauth.window", &[("e", &e.to_string())]);
+            flowlog::log(&flow, "window-fail", &m);
+            m
+        })?;
     if let Some(w) = app.get_webview_window("login") {
         w.on_window_event(move |e| {
             if let tauri::WindowEvent::CloseRequested { .. } = e {
                 let mut pending = pending_oauth_guard();
-                if pending.as_ref().map(|p| p.flow == flow_close).unwrap_or(false) {
+                if pending
+                    .as_ref()
+                    .map(|p| p.flow == flow_close)
+                    .unwrap_or(false)
+                {
                     flowlog::log(&flow_close, "cancelled", "");
                     *pending = None;
                 }
@@ -608,7 +720,9 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
 }
 
 fn sweep_login_profiles(root: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(7 * 24 * 3600);
     for e in entries.flatten() {
         let Ok(meta) = e.metadata() else { continue };
@@ -640,7 +754,14 @@ async fn set_auth_proxy(app: AppHandle, on: bool, url: Option<String>) -> Result
     Ok(())
 }
 
-async fn finish_oauth(app: &AppHandle, provider: String, state: String, flow: String, mid: String, callback_url: &str) {
+async fn finish_oauth(
+    app: &AppHandle,
+    provider: String,
+    state: String,
+    flow: String,
+    mid: String,
+    callback_url: &str,
+) {
     let result = {
         let provider = provider.clone();
         let state = state.clone();
@@ -680,12 +801,22 @@ async fn finish_oauth(app: &AppHandle, provider: String, state: String, flow: St
                     return Err(e);
                 }
             };
-            match persist_oauth_account(&Paths::detect(), &provider, &exchanged["raw"], &flow, &mid, false) {
+            match persist_oauth_account(
+                &Paths::detect(),
+                &provider,
+                &exchanged["raw"],
+                &flow,
+                &mid,
+                false,
+            ) {
                 Ok(v) => {
                     flowlog::log(
                         &flow,
                         "persist-ok",
-                        &format!("channel=deeplink duplicate={}", v.get("duplicate").is_some()),
+                        &format!(
+                            "channel=deeplink duplicate={}",
+                            v.get("duplicate").is_some()
+                        ),
                     );
                     Ok(v)
                 }
@@ -702,10 +833,16 @@ async fn finish_oauth(app: &AppHandle, provider: String, state: String, flow: St
     };
     if let Err(e) = &result {
         if deeplink_err_soft(e) {
-            let ours = pending_oauth_guard().as_ref().map(|p| p.flow == flow).unwrap_or(false);
+            let ours = pending_oauth_guard()
+                .as_ref()
+                .map(|p| p.flow == flow)
+                .unwrap_or(false);
             if ours {
                 flowlog::log(&flow, "soft-fail", e);
-                let _ = app.emit("oauth://done", &json!({ "ok": false, "soft": true, "error": e }));
+                let _ = app.emit(
+                    "oauth://done",
+                    &json!({ "ok": false, "soft": true, "error": e }),
+                );
             }
             return;
         }
@@ -743,7 +880,8 @@ fn persist_oauth_account(
         .to_string();
     let raw_access = oauth::extract_access_token(provider, raw).unwrap_or_default();
     let access_token = if provider == "zai" && !raw_access.is_empty() {
-        oauth::resolve_zai_business_token(&raw_access).ok_or_else(|| i18n::tr("err.oauth.zai_business"))?
+        oauth::resolve_zai_business_token(&raw_access)
+            .ok_or_else(|| i18n::tr("err.oauth.zai_business"))?
     } else {
         raw_access
     };
@@ -779,7 +917,11 @@ fn persist_oauth_account(
         dup.credentials = credentials;
         dup.config = Some(config);
         dup.updated_at = now_ts();
-        if dup.virtual_device_mid.as_deref().map_or(true, |m| m.trim().is_empty()) {
+        if dup
+            .virtual_device_mid
+            .as_deref()
+            .is_none_or(|m| m.trim().is_empty())
+        {
             dup.virtual_device_mid = Some(mid.to_string());
         }
         if !flow_still_ours() {
@@ -787,7 +929,9 @@ fn persist_oauth_account(
         }
         save_account(paths, &dup)?;
         *pending_oauth_guard() = None;
-        return Ok(json!({ "id": dup.id, "name": dup.name, "provider": provider, "duplicate": true }));
+        return Ok(
+            json!({ "id": dup.id, "name": dup.name, "provider": provider, "duplicate": true }),
+        );
     }
     let base = credentials
         .get(format!("oauth:{provider}:user_info"))
@@ -838,7 +982,12 @@ fn finalize_oauth_result(app: &AppHandle, result: Result<serde_json::Value, Stri
 
 fn spawn_poll_loop(app: AppHandle, provider: String, flow: String, mid: String, cfg: PollCfg) {
     std::thread::spawn(move || {
-        let ours = || pending_oauth_guard().as_ref().map(|p| p.flow == flow).unwrap_or(false);
+        let ours = || {
+            pending_oauth_guard()
+                .as_ref()
+                .map(|p| p.flow == flow)
+                .unwrap_or(false)
+        };
         let deadline = {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -856,7 +1005,8 @@ fn spawn_poll_loop(app: AppHandle, provider: String, flow: String, mid: String, 
                 Ok(oauth::PollOutcome::Ready(data)) => {
                     flowlog::log(&flow, "poll-ready", "");
                     let raw = json!({ "code": 0, "data": data });
-                    let result = persist_oauth_account(&Paths::detect(), &provider, &raw, &flow, &mid, true);
+                    let result =
+                        persist_oauth_account(&Paths::detect(), &provider, &raw, &flow, &mid, true);
                     match &result {
                         Ok(v) => flowlog::log(
                             &flow,
@@ -941,7 +1091,11 @@ fn open_captcha_window(app: &AppHandle, auto: bool) -> Result<(), String> {
 #[tauri::command]
 async fn kill_zcode(app: AppHandle) -> Result<(), String> {
     let _guard = store_guard();
-    let r = if store::kill_zcode()? { Ok(()) } else { Err(i18n::tr("err.zcode.kill_timeout")) };
+    let r = if store::kill_zcode()? {
+        Ok(())
+    } else {
+        Err(i18n::tr("err.zcode.kill_timeout"))
+    };
     rebuild_tray(&app);
     r
 }
@@ -988,7 +1142,11 @@ async fn set_language(app: AppHandle, lang: String) -> Result<(), String> {
     }
     i18n::set(l);
     rebuild_tray(&app);
-    for (label, key) in [("settings", "title.settings"), ("captcha", "title.captcha"), ("login", "title.login")] {
+    for (label, key) in [
+        ("settings", "title.settings"),
+        ("captcha", "title.captcha"),
+        ("login", "title.login"),
+    ] {
         if let Some(w) = app.get_webview_window(label) {
             let _ = w.set_title(&i18n::tr(key));
         }
@@ -999,7 +1157,9 @@ async fn set_language(app: AppHandle, lang: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn reveal_main(app: AppHandle) -> Result<(), String> {
-    let win = app.get_webview_window("main").ok_or_else(|| i18n::tr("err.main.missing"))?;
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| i18n::tr("err.main.missing"))?;
     win.show().map_err(|e| e.to_string())?;
     let _ = win.set_focus();
     Ok(())
@@ -1037,8 +1197,12 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
 }
 
 fn center_over_main(app: &AppHandle, win: &tauri::WebviewWindow, w: f64, h: f64) {
-    let Some(m) = app.get_webview_window("main") else { return };
-    let (Ok(p), Ok(s), Ok(scale)) = (m.outer_position(), m.outer_size(), m.scale_factor()) else { return };
+    let Some(m) = app.get_webview_window("main") else {
+        return;
+    };
+    let (Ok(p), Ok(s), Ok(scale)) = (m.outer_position(), m.outer_size(), m.scale_factor()) else {
+        return;
+    };
     let (mx, my) = (p.x as f64 / scale, p.y as f64 / scale);
     let (mw, mh) = (s.width as f64 / scale, s.height as f64 / scale);
     let x = mx + (mw - w).max(0.0) / 2.0;
@@ -1070,23 +1234,30 @@ async fn export_pick_path(app: AppHandle, id: String) -> Result<serde_json::Valu
     let picked = app
         .dialog()
         .file()
-        .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
+        .add_filter(i18n::tr("dialog.zsb"), &["zsb"])
         .set_file_name(&default_name)
         .blocking_save_file();
     let Some(fp) = picked else {
         return Ok(json!({ "picked": false }));
     };
-    let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
+    let path = fp
+        .into_path()
+        .map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
     Ok(json!({ "picked": true, "path": path.to_string_lossy(), "name": acc.name }))
 }
 
 #[tauri::command]
-async fn export_finalize(path: String, id: String, password: String) -> Result<serde_json::Value, String> {
+async fn export_finalize(
+    path: String,
+    id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
     let acc = load_account(&Paths::detect(), &id)?;
     let payload = store::export_bundle_value(std::slice::from_ref(&acc));
     let sealed = cipher::seal(&payload, &password, cipher::FORMAT_BUNDLE)?;
     let body = serde_json::to_string_pretty(&sealed).unwrap() + "\n";
-    store::atomic_write(std::path::Path::new(&path), &body).map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
+    store::atomic_write(std::path::Path::new(&path), &body)
+        .map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
     Ok(json!({ "saved": true, "path": path }))
 }
 
@@ -1099,13 +1270,15 @@ async fn export_all_pick_path(app: AppHandle) -> Result<serde_json::Value, Strin
     let picked = app
         .dialog()
         .file()
-        .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
+        .add_filter(i18n::tr("dialog.zsb"), &["zsb"])
         .set_file_name("zcode-accounts.zsb")
         .blocking_save_file();
     let Some(fp) = picked else {
         return Ok(json!({ "picked": false }));
     };
-    let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
+    let path = fp
+        .into_path()
+        .map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
     Ok(json!({ "picked": true, "path": path.to_string_lossy(), "count": accounts.len() }))
 }
 
@@ -1118,7 +1291,8 @@ async fn export_all_finalize(path: String, password: String) -> Result<serde_jso
     let payload = store::export_bundle_value(&accounts);
     let sealed = cipher::seal(&payload, &password, cipher::FORMAT_BUNDLE)?;
     let body = serde_json::to_string_pretty(&sealed).unwrap() + "\n";
-    store::atomic_write(std::path::Path::new(&path), &body).map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
+    store::atomic_write(std::path::Path::new(&path), &body)
+        .map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
     Ok(json!({ "saved": true, "path": path, "count": accounts.len() }))
 }
 
@@ -1127,7 +1301,7 @@ async fn import_pick_files(app: AppHandle) -> Result<serde_json::Value, String> 
     let picked = app
         .dialog()
         .file()
-        .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
+        .add_filter(i18n::tr("dialog.zsb"), &["zsb"])
         .blocking_pick_files();
     let Some(files) = picked else {
         return Ok(json!({ "picked": false }));
@@ -1142,39 +1316,61 @@ async fn import_pick_files(app: AppHandle) -> Result<serde_json::Value, String> 
                 continue;
             }
         };
-        let fname = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let fname = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let raw = match std::fs::read_to_string(&path) {
             Ok(r) => r,
             Err(e) => {
-                errors.push(i18n::trf("err.import.read", &[("fname", fname.as_str()), ("e", &e.to_string())]));
+                errors.push(i18n::trf(
+                    "err.import.read",
+                    &[("fname", fname.as_str()), ("e", &e.to_string())],
+                ));
                 continue;
             }
         };
         match serde_json::from_str::<Value>(&raw) {
             Ok(v) => {
                 if !cipher::is_sealed(&v) {
-                    errors.push(i18n::trf("err.import.not_sealed", &[("fname", fname.as_str())]));
+                    errors.push(i18n::trf(
+                        "err.import.not_sealed",
+                        &[("fname", fname.as_str())],
+                    ));
                 } else if v.get("format").and_then(|f| f.as_str()) != Some(cipher::FORMAT_BUNDLE) {
-                    errors.push(i18n::trf("err.import.not_bundle", &[("fname", fname.as_str())]));
+                    errors.push(i18n::trf(
+                        "err.import.not_bundle",
+                        &[("fname", fname.as_str())],
+                    ));
                 } else {
                     sealed.push((fname, v));
                 }
             }
-            Err(e) => errors.push(i18n::trf("err.import.json", &[("fname", fname.as_str()), ("e", &e.to_string())])),
+            Err(e) => errors.push(i18n::trf(
+                "err.import.json",
+                &[("fname", fname.as_str()), ("e", &e.to_string())],
+            )),
         }
     }
     Ok(json!({ "picked": true, "sealed": sealed, "errors": errors }))
 }
 
 #[tauri::command]
-async fn import_sealed(app: AppHandle, files: Vec<(String, Value)>, password: String) -> Result<ImportReport, String> {
+async fn import_sealed(
+    app: AppHandle,
+    files: Vec<(String, Value)>,
+    password: String,
+) -> Result<ImportReport, String> {
     let _guard = store_guard();
     let mut decrypted = vec![];
     let mut errors = vec![];
     for (fname, v) in files {
         match cipher::open(&v, &password) {
             Ok(payload) => decrypted.push((fname, payload)),
-            Err(e) => errors.push(i18n::trf("err.import.wrap", &[("fname", fname.as_str()), ("e", &e)])),
+            Err(e) => errors.push(i18n::trf(
+                "err.import.wrap",
+                &[("fname", fname.as_str()), ("e", &e)],
+            )),
         }
     }
     let mut report = if decrypted.is_empty() {
@@ -1193,12 +1389,14 @@ async fn pick_zcode_path(app: AppHandle) -> Result<serde_json::Value, String> {
     let picked = app
         .dialog()
         .file()
-        .add_filter(&i18n::tr("dialog.exe"), &["exe"])
+        .add_filter(i18n::tr("dialog.exe"), &["exe"])
         .blocking_pick_file();
     let Some(fp) = picked else {
         return Ok(json!({ "picked": false }));
     };
-    let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
+    let path = fp
+        .into_path()
+        .map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
     Ok(json!({ "picked": true, "path": path.to_string_lossy() }))
 }
 
@@ -1326,7 +1524,12 @@ pub fn run() {
                     }
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, button_state: tauri::tray::MouseButtonState::Up, .. } = event {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
                         show_main(tray.app_handle());
                     }
                 })
@@ -1360,7 +1563,10 @@ mod tests {
         let p = Some(dummy_pending("id-1"));
         assert!(pending_matches(&p, Some("id-1")));
         assert!(!pending_matches(&p, Some("id-2")));
-        assert!(pending_matches(&p, None), "None (старый вызов) матчит любую попытку");
+        assert!(
+            pending_matches(&p, None),
+            "None (старый вызов) матчит любую попытку"
+        );
         assert!(!pending_matches(&None, Some("id-1")));
         assert!(!pending_matches(&None, None));
     }
@@ -1370,12 +1576,19 @@ mod tests {
         // claim_start обязан отклонять новую попытку при активной (pending занят).
         let p = Some(dummy_pending("id-1"));
         let busy = p.is_some();
-        assert!(busy, "вторая attempt_start должна получить err.claim.pending");
+        assert!(
+            busy,
+            "вторая attempt_start должна получить err.claim.pending"
+        );
     }
 
     #[test]
     fn failure_payload_has_no_token_material() {
-        let err = claim::ClaimError { code: 1001, message: "msg".into(), next_at: None };
+        let err = claim::ClaimError {
+            code: 1001,
+            message: "msg".into(),
+            next_at: None,
+        };
         let payload = claim::failure_payload("acc-1", "acc", "plan", &err);
         let raw = serde_json::to_string(&payload).unwrap();
         assert!(raw.contains("acc-1"));

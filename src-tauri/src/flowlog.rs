@@ -1,4 +1,3 @@
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -36,12 +35,19 @@ fn append(path: &Path, line: &str) {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if std::fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
+    if std::fs::metadata(path)
+        .map(|m| m.len() > MAX_BYTES)
+        .unwrap_or(false)
+    {
         let old = path.with_extension("log.old");
         let _ = std::fs::remove_file(&old);
         let _ = std::fs::rename(path, &old);
     }
-    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
         return;
     };
     let _ = f.write_all(line.as_bytes());
