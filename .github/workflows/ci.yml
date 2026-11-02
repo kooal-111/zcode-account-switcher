@@ -6,27 +6,72 @@ on:
   pull_request:
 
 jobs:
-  test-windows:
-    name: cargo test (windows)
+  checks:
+    name: checks (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
+      - name: Install frontend deps
+        run: npm ci --no-audit --no-fund
+
+      - name: i18n keys (zh/en/ru parity)
+        run: npm run check:i18n
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high
+
+      - name: cargo fmt
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
       - name: cargo test
         run: cargo test --lib
         working-directory: src-tauri
 
-  check-portability:
+      - name: cargo audit
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+      - name: UI tests (Playwright, Edge, mock scenarios)
+        run: npx playwright test
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs
+          path: |
+            test-results/
+          if-no-files-found: ignore
+
+  portability:
     name: cargo test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +83,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -47,23 +92,13 @@ jobs:
           workspaces: src-tauri
 
       - name: cargo test
-        shell: bash
-        run: |
-          cd src-tauri
-          cargo test --lib 2>&1 | tee check.log
-          exit ${PIPESTATUS[0]}
+        run: cargo test --lib
+        working-directory: src-tauri
 
-      - name: Publish log on failure
+      - name: Upload log on failure
         if: failure()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name ci-logbot
-          git config user.email bot@users.noreply.github.com
-          git checkout --orphan ci-logs
-          git rm -rf -q .
-          cp src-tauri/check.log "check-${RUNNER_OS}.log"
-          git add "check-${RUNNER_OS}.log"
-          git commit -qm "ci log ${GITHUB_SHA}"
-          git push -q origin HEAD:ci-logs --force
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-${{ matrix.os }}
+          path: src-tauri/target/debug/deps/
+          if-no-files-found: ignore
