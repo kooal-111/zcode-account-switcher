@@ -2,11 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { esc, toast, openPwModal, openConfirmModal, openProviderModal, installDelegation, dismissSplash } from "./ui.js";
 import { ic } from "./icons.js";
-import { init, t, has, lang, localeTag, stripErr } from "./i18n.js";
+import { init, t, has, localeTag, stripErr } from "./i18n.js";
+import { fmtNum, fmtTokens } from "./format.js";
 import { applyMock } from "./mock.js";
 import {
   newClaimState, beginPreview, resolvePreview, failPreview, markStale,
-  isStale, plansOf, createPreviewQueue,
+  isStale, plansOf, createPreviewQueue, claimableIds,
 } from "./claim-state.js";
 
 const invokeFn = applyMock(invoke);
@@ -43,26 +44,13 @@ function notchColor(id) {
   return NOTCH_COLORS[h % NOTCH_COLORS.length];
 }
 
-function fmtNum(v) {
-  if (v == null) return t("q.unknown");
-  const n = Number(v);
-  if (!isFinite(n)) return t("q.unknown");
-  if (lang() === "zh") {
-    if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + " 亿";
-    if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + " 万";
-    return n.toLocaleString(localeTag(), { maximumFractionDigits: 2 });
-  }
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + "B";
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  return n.toLocaleString(localeTag(), { maximumFractionDigits: 2 });
-}
 function idLabel(id) {
   if (!id) return null;
   return id.display_name || id.username || id.email || null;
 }
 
 async function refresh() {
-  state = await invoke("get_state");
+  state = await invokeFn("get_state");
   if (state?.language) init(state.language);
 }
 
@@ -376,9 +364,7 @@ const actions = {
   },
 
   async claimAll() {
-    const ids = (state?.accounts || [])
-      .map((a) => a.id)
-      .filter((id) => plansOf(claimable[id]).length > 0);
+    const ids = claimableIds(state?.accounts, claimable);
     if (!ids.length) { toast(t("m.noClaimableAccounts"), "warn"); return; }
     if (claimActive || claimAllRunning || refreshClaim.running) return;
     claimAllRunning = true;
@@ -623,19 +609,6 @@ function winRowHtml(it, cls = "") {
   </div>`;
 }
 
-function fmtTokens(n) {
-  if (n == null) return "";
-  if (lang() === "zh") {
-    if (n >= 1e8) return (n / 1e8).toFixed(n % 1e8 === 0 ? 0 : 1) + "亿";
-    if (n >= 1e6) return (n / 1e6).toFixed(n % 1e6 === 0 ? 0 : 1) + "M";
-    if (n >= 1e3) return Math.round(n / 1e3) + "K";
-    return String(Math.round(n));
-  }
-  if (n >= 1e9) return (n / 1e9).toFixed(n % 1e9 === 0 ? 0 : 1) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(n % 1e6 === 0 ? 0 : 1) + "M";
-  if (n >= 1e3) return Math.round(n / 1e3) + "K";
-  return String(Math.round(n));
-}
 function balRowHtml(it) {
   const rem = it.total != null && it.remaining != null ? `${fmtTokens(it.remaining)}/${fmtTokens(it.total)}` : "";
   const label = it.name.replace(/^GLM-?/i, "");
@@ -892,7 +865,7 @@ function render() {
        </div>`
     : rows;
 
-  const claimableCount = s.accounts.filter((a) => plansOf(claimable[a.id]).length > 0).length;
+  const claimableCount = claimableIds(s.accounts, claimable).length;
 
   $app.innerHTML = `
     <header class="topbar">
@@ -1059,23 +1032,23 @@ async function sweepTick() {
 
 (async () => {
   try {
-    appVer = await invoke("app_version").catch(() => "");
+    appVer = await invokeFn("app_version").catch(() => "");
     await refresh();
     render();
-    await invoke("reveal_main");
+    await invokeFn("reveal_main");
     setTimeout(dismissSplash, 350);
     enrollAccounts();
     enqueueAllPreviews();
     sweepTick();
     setInterval(() => {
-      invoke("get_state").then((s) => { state = s; if (s?.language) init(s.language); enrollAccounts(); if (!uiLocked()) render(); }).catch(() => {});
+      invokeFn("get_state").then((s) => { state = s; if (s?.language) init(s.language); enrollAccounts(); if (!uiLocked()) render(); }).catch(() => {});
     }, 5000);
     setInterval(sweepTick, TICK_MS);
     setTimeout(autoClaimTick, AUTO_CLAIM_FIRST_DELAY_MS);
     setInterval(autoClaimTick, AUTO_CLAIM_INTERVAL_MS);
   } catch (e) {
     $app.innerHTML = `<div class="loading" style="color:var(--red)">${t("common.loadFail", { e: esc(stripErr(e)) })}</div>`;
-    invoke("reveal_main").catch(() => {});
+    invokeFn("reveal_main").catch(() => {});
     dismissSplash();
   }
 })();

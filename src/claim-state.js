@@ -131,3 +131,10 @@ export function createPreviewQueue({ concurrency = 2, gapMs = 350, task } = {}) 
     },
   };
 }
+
+// Список аккаунтов, у которых сейчас есть доступные планы (для «Получить все» и счётчика).
+export function claimableIds(accounts, claimable) {
+  return (accounts || [])
+    .map((a) => a.id)
+    .filter((id) => plansOf(claimable ? claimable[id] : null).length > 0);
+}

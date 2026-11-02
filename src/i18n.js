@@ -7,7 +7,7 @@ let LANG = "zh";
 
 export function init(lang) {
   LANG = lang === "en" || lang === "ru" ? lang : "zh";
-  document.documentElement.lang = localeTag();
+  if (typeof document !== "undefined") document.documentElement.lang = localeTag();
 }
 
 export function lang() { return LANG; }

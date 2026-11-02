@@ -31,3 +31,7 @@ nul
 .zcode/
 
 __pycache__/
+
+# Playwright
+/test-results/
+/playwright-report/
