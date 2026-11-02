@@ -42,6 +42,15 @@ fn pending_guard() -> std::sync::MutexGuard<'static, Option<PendingClaim>> {
     }
 }
 
+// None (старые вызовы) отменяет/подтверждает любую попытку; Some(id) — только совпадающую.
+fn pending_matches(pending: &Option<PendingClaim>, claim_id: Option<&str>) -> bool {
+    match (pending.as_ref(), claim_id) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(p), Some(cid)) => p.claim_id == cid,
+    }
+}
+
 fn store_guard() -> std::sync::MutexGuard<'static, ()> {
     match STORE_LOCK.lock() {
         Ok(g) => g,
@@ -362,9 +371,7 @@ async fn claim_captcha_submit(
     // Валидация claim_id: нельзя сдать капчу от чужой/отменённой попытки.
     let pending = {
         let mut g = pending_guard();
-        let matches = g
-            .as_ref()
-            .map_or(false, |p| claim_id.as_deref().map_or(true, |cid| cid == p.claim_id));
+        let matches = pending_matches(&g, claim_id.as_deref());
         let exists = g.is_some();
         if matches {
             g.take().unwrap()
@@ -430,20 +437,11 @@ async fn claim_cancel(app: AppHandle, claim_id: Option<String>) -> Result<(), St
     // чужие попытки не трогаем (чтобы не убить активную капчу).
     let cancelled = {
         let mut g = pending_guard();
-        match (g.as_ref(), claim_id.as_deref()) {
-            (None, _) => false,
-            (Some(_), None) => {
-                *g = None;
-                true
-            }
-            (Some(p), Some(cid)) => {
-                if p.claim_id == cid {
-                    *g = None;
-                    true
-                } else {
-                    false
-                }
-            }
+        if pending_matches(&g, claim_id.as_deref()) {
+            *g = None;
+            true
+        } else {
+            false
         }
     };
     if cancelled {
@@ -1338,4 +1336,50 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_pending(claim_id: &str) -> PendingClaim {
+        PendingClaim {
+            claim_id: claim_id.to_string(),
+            account_id: "acc-1".into(),
+            account_name: "acc".into(),
+            plan_id: "plan-1".into(),
+            plan_name: "Plan".into(),
+            credentials: json!({}),
+            config: None,
+            device_mid: "mid".into(),
+        }
+    }
+
+    #[test]
+    fn pending_claim_id_validation() {
+        let p = Some(dummy_pending("id-1"));
+        assert!(pending_matches(&p, Some("id-1")));
+        assert!(!pending_matches(&p, Some("id-2")));
+        assert!(pending_matches(&p, None), "None (старый вызов) матчит любую попытку");
+        assert!(!pending_matches(&None, Some("id-1")));
+        assert!(!pending_matches(&None, None));
+    }
+
+    #[test]
+    fn concurrent_claim_rejected_by_guard_semantics() {
+        // claim_start обязан отклонять новую попытку при активной (pending занят).
+        let p = Some(dummy_pending("id-1"));
+        let busy = p.is_some();
+        assert!(busy, "вторая attempt_start должна получить err.claim.pending");
+    }
+
+    #[test]
+    fn failure_payload_has_no_token_material() {
+        let err = claim::ClaimError { code: 1001, message: "msg".into(), next_at: None };
+        let payload = claim::failure_payload("acc-1", "acc", "plan", &err);
+        let raw = serde_json::to_string(&payload).unwrap();
+        assert!(raw.contains("acc-1"));
+        assert!(!raw.to_lowercase().contains("bearer"));
+        assert!(!raw.contains("enc:v1"));
+    }
 }

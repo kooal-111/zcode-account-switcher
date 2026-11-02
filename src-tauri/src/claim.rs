@@ -355,13 +355,17 @@ pub fn submit_claim(
     Ok(v)
 }
 
+// Для публичного эндпоинта пустой "Authorization: Bearer" не отправляем вовсе.
+fn filter_public_headers(headers: Vec<(String, String)>) -> Vec<(String, String)> {
+    headers
+        .into_iter()
+        .filter(|(k, v)| !(k == "Authorization" && v.trim().eq_ignore_ascii_case("Bearer")))
+        .collect()
+}
+
 pub fn fetch_captcha_config() -> Result<CaptchaConfig, String> {
     let mut req = agent().get(CLIENT_CONFIGS_URL);
-    for (k, v) in quota::zai_billing_headers("") {
-        // Публичный эндпоинт: пустой "Authorization: Bearer" не отправляем вовсе.
-        if k == "Authorization" && v.trim().eq_ignore_ascii_case("Bearer") {
-            continue;
-        }
+    for (k, v) in filter_public_headers(quota::zai_billing_headers("")) {
         req = req.set(&k, &v);
     }
     let resp = req
@@ -373,9 +377,13 @@ pub fn fetch_captcha_config() -> Result<CaptchaConfig, String> {
     if response_code(&v).unwrap_or(-1) != 0 {
         return Err(crate::i18n::tr("err.claim.config_unavailable"));
     }
+    Ok(parse_captcha_config(&v))
+}
+
+fn parse_captcha_config(v: &Value) -> CaptchaConfig {
     let c = v.pointer("/data/configs/captcha").cloned().unwrap_or(Value::Null);
     let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-    Ok(CaptchaConfig {
+    CaptchaConfig {
         enabled: c.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
         region: s("region"),
         prefix: s("prefix"),
@@ -385,7 +393,7 @@ pub fn fetch_captcha_config() -> Result<CaptchaConfig, String> {
             .and_then(|x| x.as_bool())
             .or_else(|| c.get("skipModelRequest").and_then(|x| x.as_bool()))
             .unwrap_or(false),
-    })
+    }
 }
 
 fn str_field<'a>(e: &'a Value, snake: &str, camel: &str) -> Option<&'a str> {
@@ -532,5 +540,133 @@ pub fn failure_message(code: i64, body: &Value) -> String {
         base
     } else {
         crate::i18n::trf("claim.fail.with_server", &[("base", &base), ("server_msg", &server_msg)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn fixture(name: &str) -> Value {
+        let raw = match name {
+            "preview_two_plans.json" => include_str!("../tests/fixtures/preview_two_plans.json"),
+            "preview_unknown_fields.json" => include_str!("../tests/fixtures/preview_unknown_fields.json"),
+            "claim_error_1005.json" => include_str!("../tests/fixtures/claim_error_1005.json"),
+            "captcha_enabled_camel.json" => include_str!("../tests/fixtures/captcha_enabled_camel.json"),
+            "captcha_skip_snake.json" => include_str!("../tests/fixtures/captcha_skip_snake.json"),
+            "captcha_disabled.json" => include_str!("../tests/fixtures/captcha_disabled.json"),
+            other => panic!("unknown fixture: {other}"),
+        };
+        serde_json::from_str(raw).unwrap()
+    }
+
+    #[test]
+    fn response_code_accepts_number_and_string() {
+        assert_eq!(response_code(&json!({ "code": 0 })), Some(0));
+        assert_eq!(response_code(&json!({ "code": "0" })), Some(0));
+        assert_eq!(response_code(&json!({ "code": 1001 })), Some(1001));
+        assert_eq!(response_code(&json!({ "code": "1001" })), Some(1001));
+        assert_eq!(response_code(&json!({ "code": " 3007 " })), Some(3007));
+        assert_eq!(response_code(&json!({ "code": "abc" })), None);
+        assert_eq!(response_code(&json!({})), None);
+    }
+
+    #[test]
+    fn parse_plan_structured_grants_and_sort() {
+        let v = fixture("preview_two_plans.json");
+        let plans: Vec<ClaimPlan> = v
+            .pointer("/data/plans")
+            .and_then(|p| p.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(parse_plan)
+            .collect();
+        let mut sorted = plans;
+        sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.plan_id.cmp(&b.plan_id)));
+        assert_eq!(sorted[0].plan_id, "p-weekend");
+        assert_eq!(sorted[0].priority, 10);
+        let g = &sorted[0].grant_items[0];
+        assert_eq!(g.name, "GLM-5.3");
+        assert_eq!(g.units, 1500000.0);
+        assert_eq!(g.period, "daily");
+        // Китайские строки в Rust больше не формируются
+        assert!(serde_json::to_string(&sorted[0]).unwrap().find("每日").is_none());
+        assert!(serde_json::to_string(&sorted[0]).unwrap().find("亿").is_none());
+    }
+
+    #[test]
+    fn parse_plan_survives_unknown_fields() {
+        let v = fixture("preview_unknown_fields.json");
+        let plan = v
+            .pointer("/data/plans")
+            .and_then(|p| p.as_array())
+            .unwrap()
+            .iter()
+            .find_map(parse_plan)
+            .expect("plan parsed");
+        assert_eq!(plan.plan_id, "p-unknown");
+    }
+
+    #[test]
+    fn captcha_config_camel_snake_and_disabled() {
+        let cfg = parse_captcha_config(&fixture("captcha_enabled_camel.json"));
+        assert!(cfg.enabled);
+        assert!(cfg.skip_model_request);
+        assert_eq!(cfg.scene_id, "scene-123");
+        let cfg = parse_captcha_config(&fixture("captcha_skip_snake.json"));
+        assert!(cfg.skip_model_request);
+        let cfg = parse_captcha_config(&fixture("captcha_disabled.json"));
+        assert!(!cfg.enabled);
+        assert!(!cfg.skip_model_request);
+    }
+
+    #[test]
+    fn public_headers_drop_empty_bearer() {
+        let headers = quota::zai_billing_headers("");
+        let filtered = filter_public_headers(headers);
+        assert!(
+            !filtered.iter().any(|(k, v)| k == "Authorization" && v.trim().eq_ignore_ascii_case("Bearer")),
+            "пустой Authorization не должен отправляться"
+        );
+        let headers = quota::zai_billing_headers("token-abc");
+        let filtered = filter_public_headers(headers);
+        assert!(filtered.iter().any(|(k, v)| k == "Authorization" && v == "Bearer token-abc"));
+    }
+
+    #[test]
+    fn failure_message_maps_known_codes() {
+        let body = json!({ "code": 1001, "msg": "server says no" });
+        let msg = failure_message(1001, &body);
+        assert!(!msg.is_empty());
+        assert!(msg.contains("server says no"));
+        let generic = failure_message(424242, &json!({}));
+        assert!(!generic.is_empty());
+    }
+
+    #[test]
+    fn claim_error_1005_parses_next_at() {
+        let err = claim_error(1005, &fixture("claim_error_1005.json"));
+        assert_eq!(err.code, 1005);
+        assert_eq!(err.next_at, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn activation_cache_dedup_and_privacy() {
+        let home = std::env::temp_dir().join(format!("zsw-act-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let today = "2030-01-02";
+        assert!(!activation_sent_today(&home, "user-a", "mid-1", "3.17.1", today));
+        mark_activation_sent(&home, "user-a", "mid-1", "3.17.1", today);
+        assert!(activation_sent_today(&home, "user-a", "mid-1", "3.17.1", today));
+        // другой аккаунт/девайс/версия — другой ключ
+        assert!(!activation_sent_today(&home, "user-b", "mid-1", "3.17.1", today));
+        assert!(!activation_sent_today(&home, "user-a", "mid-2", "3.17.1", today));
+        assert!(!activation_sent_today(&home, "user-a", "mid-1", "3.18.0", today));
+        // в файле нет сырого deviceMid и user_id
+        let raw = std::fs::read_to_string(activation_cache_path(&home)).unwrap();
+        assert!(!raw.contains("mid-1"));
+        assert!(!raw.contains("user-a"));
+        std::fs::remove_dir_all(&home).ok();
     }
 }
