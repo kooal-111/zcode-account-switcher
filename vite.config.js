@@ -1,5 +1,9 @@
 import { defineConfig } from "vite";
-import { resolve } from "path";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
+
+// Vite 8 / ESM: __dirname недоступен — корень через import.meta.url.
+const root = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   clearScreen: false,
@@ -11,13 +15,12 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_"],
   build: {
     target: "chrome105",
-    minify: "esbuild",
     sourcemap: false,
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "index.html"),
-        settings: resolve(__dirname, "settings.html"),
-        captcha: resolve(__dirname, "captcha.html"),
+        main: resolve(root, "index.html"),
+        settings: resolve(root, "settings.html"),
+        captcha: resolve(root, "captcha.html"),
       },
     },
   },
