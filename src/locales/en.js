@@ -208,4 +208,7 @@ export const en = {
   "c.initFail": "Captcha initialization failed",
   "c.inPopup": "Complete verification in the popup…",
   "c.cspBlocked": "CSP blocked {directive} ← {uri}",
+  "c.retry": "Retry",
+  "c.sdkTimeout": "Captcha SDK load timed out",
+  "c.timedOut": "Submit timed out",
 };
