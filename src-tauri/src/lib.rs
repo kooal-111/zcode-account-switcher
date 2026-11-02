@@ -345,7 +345,9 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
                         }
                     }
                 }
-                None => (false, Some(i18n::tr("err.claim.no_user_info"))),
+                // Отсутствие user_info виден по тегу «Нужен повторный вход» в UI;
+                // тост на каждый refresh был бы спамом при множестве аккаунтов.
+                None => (false, None),
             };
         let plans = claim::preview_plans(
             &paths.home,

@@ -90,6 +90,10 @@ async function loadClaimPreview(id) {
   if (!uiLocked()) render();
   try {
     const plans = await invokeFn("claim_preview", { id });
+    if (!(state?.accounts || []).some((a) => a.id === id)) {
+      delete claimable[id]; // аккаунт удалили, пока запрос был в полёте
+      return;
+    }
     claimable[id] = resolvePreview(next, next.requestId, plans);
   } catch (e) {
     claimable[id] = failPreview(next, next.requestId, stripErr(e));
