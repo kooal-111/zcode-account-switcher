@@ -12,10 +12,10 @@
     "check:i18n": "node scripts/check-i18n-keys.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.1.1"
+    "@tauri-apps/api": "^2.12.4"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0",
+    "@tauri-apps/cli": "^2.12.4",
     "vite": "^5.4.8"
   },
   "license": "MIT",
