@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use store::*;
 use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 use tauri_plugin_autostart::AutoLaunchManager;
 use tauri_plugin_dialog::DialogExt;
 
@@ -23,6 +23,7 @@ const TRAY_ID: &str = "main";
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
 struct PendingClaim {
+    claim_id: String,
     account_id: String,
     account_name: String,
     plan_id: String,
@@ -195,30 +196,48 @@ async fn update_account_from_live(app: AppHandle, id: String) -> Result<Account,
 
 #[tauri::command]
 async fn switch_to(app: AppHandle, id: String, force: bool, restart: bool) -> Result<SwitchResult, String> {
-    let _guard = store_guard();
-    let paths = Paths::detect();
-    let hot = load_settings(&paths).hot_switch();
-    let r = store::switch_to(&paths, &id, force, restart, hot);
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = store_guard();
+        let paths = Paths::detect();
+        let hot = load_settings(&paths).hot_switch();
+        store::switch_to(&paths, &id, force, restart, hot)
+    })
+    .await
+    .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?;
     rebuild_tray(&app);
     r
 }
 
+fn screen_resolution(app: &AppHandle) -> Option<String> {
+    let mon = app.primary_monitor().ok().flatten()?;
+    let size = mon.size();
+    Some(format!("{}x{}", size.width, size.height))
+}
+
 #[tauri::command]
 async fn get_live_quota() -> Result<quota::QuotaOverview, String> {
-    store::live_quota(&Paths::detect())
+    tauri::async_runtime::spawn_blocking(move || store::live_quota(&Paths::detect()))
+        .await
+        .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
 }
 
 #[tauri::command]
 async fn get_account_quota(id: String) -> Result<quota::QuotaOverview, String> {
-    store::account_quota(&Paths::detect(), &id)
+    tauri::async_runtime::spawn_blocking(move || store::account_quota(&Paths::detect(), &id))
+        .await
+        .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
 }
 
 #[tauri::command]
 async fn claim_preview(id: String) -> Result<Vec<claim::ClaimPlan>, String> {
-    let paths = Paths::detect();
-    let mid = store::ensure_virtual_device_mid(&paths, &id)?;
-    let acc = load_account(&paths, &id)?;
-    claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = Paths::detect();
+        let mid = store::ensure_virtual_device_mid(&paths, &id)?;
+        let acc = load_account(&paths, &id)?;
+        claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))
+    })
+    .await
+    .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
 }
 
 #[derive(serde::Serialize)]
@@ -230,20 +249,39 @@ struct ClaimRefreshResult {
 }
 
 #[tauri::command]
-async fn claim_refresh(id: String) -> Result<ClaimRefreshResult, String> {
-    let paths = Paths::detect();
-    let mid = store::ensure_virtual_device_mid(&paths, &id)?;
-    let acc = load_account(&paths, &id)?;
-    let (activated, activation_error) =
-        match claim::telemetry_user_id(&paths.home, &acc.credentials) {
-            Some(uid) => match claim::report_activation_events(&uid, &mid) {
-                Ok(()) => (true, None),
-                Err(e) => (false, Some(e)),
-            },
-            None => (false, None),
-        };
-    let plans = claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))?;
-    Ok(ClaimRefreshResult { plans, activated, activation_error })
+async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = Paths::detect();
+        let mid = store::ensure_virtual_device_mid(&paths, &id)?;
+        let acc = load_account(&paths, &id)?;
+        let resolution = screen_resolution(&app);
+        // Активация не чаще одного раза в день на (аккаунт, deviceMid, версия клиента);
+        // сам deviceMid в кэш не пишется — только sha256-ключ.
+        let (activated, activation_error) =
+            match claim::telemetry_user_id(&paths.home, &acc.credentials) {
+                Some(uid) => {
+                    let today = claim::activation_today_str();
+                    let ver = quota::zcode_app_version();
+                    if claim::activation_sent_today(&paths.home, &uid, &mid, &ver, &today) {
+                        (false, None)
+                    } else {
+                        match claim::report_activation_events(&uid, &mid, resolution) {
+                            Ok(()) => {
+                                claim::mark_activation_sent(&paths.home, &uid, &mid, &ver, &today);
+                                (true, None)
+                            }
+                            Err(e) => (false, Some(e)),
+                        }
+                    }
+                }
+                None => (false, Some(i18n::tr("err.claim.no_user_info"))),
+            };
+        let plans =
+            claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))?;
+        Ok(ClaimRefreshResult { plans, activated, activation_error })
+    })
+    .await
+    .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
 }
 
 #[tauri::command]
@@ -253,17 +291,36 @@ async fn claim_start(
     plan_id: String,
     auto: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let paths = Paths::detect();
-    let mid = store::ensure_virtual_device_mid(&paths, &id)?;
-    let acc = load_account(&paths, &id)?;
-    let plans = claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid.clone()))?;
-    let plan = plans
-        .iter()
-        .find(|p| p.plan_id == plan_id)
-        .ok_or_else(|| i18n::tr("err.claim.gone"))?;
+    if pending_guard().is_some() {
+        return Err(i18n::tr("err.claim.pending"));
+    }
+    let prepared = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(store::Account, String, claim::ClaimPlan), String> {
+            let paths = Paths::detect();
+            let mid = store::ensure_virtual_device_mid(&paths, &id)?;
+            let acc = load_account(&paths, &id)?;
+            let plans = claim::preview_plans(
+                &paths.home,
+                &acc.credentials,
+                acc.config.as_ref(),
+                Some(mid.clone()),
+            )?;
+            let plan = plans
+                .iter()
+                .find(|p| p.plan_id == plan_id)
+                .ok_or_else(|| i18n::tr("err.claim.gone"))?
+                .clone();
+            Ok((acc, mid, plan))
+        },
+    )
+    .await
+    .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?;
+    let (acc, mid, plan) = prepared?;
     let display = if plan.name.is_empty() { plan.plan_id.clone() } else { plan.name.clone() };
+    let claim_id = uuid::Uuid::new_v4().to_string();
 
     *pending_guard() = Some(PendingClaim {
+        claim_id: claim_id.clone(),
         account_id: acc.id.clone(),
         account_name: acc.name.clone(),
         plan_id: plan.plan_id.clone(),
@@ -273,31 +330,67 @@ async fn claim_start(
         device_mid: mid,
     });
     open_captcha_window(&app, auto.unwrap_or(false))?;
-    Ok(json!({ "account": acc.name, "plan": display }))
+    Ok(json!({ "account": acc.name, "plan": display, "claimId": claim_id }))
+}
+
+#[tauri::command]
+fn claim_pending_info() -> Result<serde_json::Value, String> {
+    let g = pending_guard();
+    let p = g.as_ref().ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
+    Ok(json!({
+        "claimId": p.claim_id,
+        "accountId": p.account_id,
+        "accountName": p.account_name,
+        "planName": p.plan_name,
+    }))
 }
 
 #[tauri::command]
 async fn claim_captcha_config() -> Result<claim::CaptchaConfig, String> {
-    claim::fetch_captcha_config()
+    tauri::async_runtime::spawn_blocking(claim::fetch_captcha_config)
+        .await
+        .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
 }
 
 #[tauri::command]
 async fn claim_captcha_submit(
     app: AppHandle,
+    claim_id: Option<String>,
     param: String,
     region: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let pending = pending_guard().take().ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
+    // Валидация claim_id: нельзя сдать капчу от чужой/отменённой попытки.
+    let pending = {
+        let mut g = pending_guard();
+        let matches = g
+            .as_ref()
+            .map_or(false, |p| claim_id.as_deref().map_or(true, |cid| cid == p.claim_id));
+        let exists = g.is_some();
+        if matches {
+            g.take().unwrap()
+        } else if exists {
+            return Err(i18n::tr("err.claim.mismatch"));
+        } else {
+            return Err(i18n::tr("err.claim.none_pending"));
+        }
+    };
+    let account_id = pending.account_id.clone();
+    let account_name = pending.account_name.clone();
+    let plan_name = pending.plan_name.clone();
     let paths = Paths::detect();
-    let res = claim::submit_claim(
-        &paths.home,
-        &pending.credentials,
-        pending.config.as_ref(),
-        &pending.plan_id,
-        &param,
-        region.as_deref(),
-        Some(pending.device_mid),
-    );
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        claim::submit_claim(
+            &paths.home,
+            &pending.credentials,
+            pending.config.as_ref(),
+            &pending.plan_id,
+            &param,
+            region.as_deref(),
+            Some(pending.device_mid),
+        )
+    })
+    .await
+    .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?;
     close_captcha_window(&app);
     let payload = match res {
         Ok(v) => {
@@ -311,9 +404,9 @@ async fn claim_captcha_submit(
                 .and_then(|x| x.as_i64())
                 .map(|s| s * 1000);
             let outcome = claim::ClaimOutcome {
-                account_id: pending.account_id.clone(),
-                account_name: pending.account_name.clone(),
-                plan_name: pending.plan_name.clone(),
+                account_id,
+                account_name,
+                plan_name,
                 starts_at: ms("starts_at"),
                 ends_at: ms("ends_at"),
                 server_time,
@@ -323,12 +416,7 @@ async fn claim_captcha_submit(
             p
         }
         Err(e) => {
-            let p = claim::failure_payload(
-                &pending.account_id,
-                &pending.account_name,
-                &pending.plan_name,
-                &e,
-            );
+            let p = claim::failure_payload(&account_id, &account_name, &plan_name, &e);
             let _ = app.emit("claim://result", &p);
             return Ok(p);
         }
@@ -337,9 +425,30 @@ async fn claim_captcha_submit(
 }
 
 #[tauri::command]
-async fn claim_cancel(app: AppHandle) -> Result<(), String> {
-    *pending_guard() = None;
-    close_captcha_window(&app);
+async fn claim_cancel(app: AppHandle, claim_id: Option<String>) -> Result<(), String> {
+    // None (старые вызовы/таймауты) отменяет любую попытку; Some(id) — только свою,
+    // чужие попытки не трогаем (чтобы не убить активную капчу).
+    let cancelled = {
+        let mut g = pending_guard();
+        match (g.as_ref(), claim_id.as_deref()) {
+            (None, _) => false,
+            (Some(_), None) => {
+                *g = None;
+                true
+            }
+            (Some(p), Some(cid)) => {
+                if p.claim_id == cid {
+                    *g = None;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    };
+    if cancelled {
+        close_captcha_window(&app);
+    }
     Ok(())
 }
 
@@ -819,7 +928,7 @@ fn open_captcha_window(app: &AppHandle, auto: bool) -> Result<(), String> {
     .min_inner_size(340.0, 280.0)
     .maximizable(false)
     .resizable(false)
-    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --no-proxy-server")
+    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection")
     .visible(false)
     .build()
     .map_err(|e| e.to_string())?;
@@ -919,7 +1028,7 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
     .inner_size(w, h)
     .min_inner_size(440.0, 540.0)
     .resizable(true)
-    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --no-proxy-server")
+    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection")
     .visible(false)
     .build()
     .map_err(|e| e.to_string())?;
@@ -1148,6 +1257,7 @@ pub fn run() {
             claim_preview,
             claim_refresh,
             claim_start,
+            claim_pending_info,
             claim_captcha_config,
             claim_captcha_submit,
             claim_cancel,
@@ -1191,6 +1301,19 @@ pub fn run() {
             if let Ok(data_dir) = app.path().app_local_data_dir() {
                 flowlog::init(&data_dir);
             }
+            // Закрытие captcha-окна отменяет ровно ту попытку, к которой окно относилось.
+            app.listen("captcha://closed", |ev| {
+                let raw = ev.payload();
+                let claim_id = serde_json::from_str::<Value>(raw)
+                    .ok()
+                    .and_then(|v| v.get("claimId").and_then(|c| c.as_str()).map(String::from));
+                let mut g = pending_guard();
+                match (g.as_ref(), claim_id) {
+                    (Some(p), Some(cid)) if p.claim_id == cid => *g = None,
+                    (Some(_), None) => *g = None,
+                    _ => {}
+                }
+            });
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().expect("no window icon").clone())
                 .tooltip("Z·SWITCH")

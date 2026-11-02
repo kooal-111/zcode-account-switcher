@@ -1,9 +1,12 @@
 
 use crate::quota;
 use crate::zcrypto;
+use chrono::Local;
 use serde::Serialize;
 use serde_json::Value;
-use std::path::Path;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const BILLING_PREVIEW_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/preview";
@@ -25,8 +28,6 @@ pub struct ClaimPlan {
     pub name: String,
     pub description: String,
     pub priority: i64,
-    pub grants: Vec<String>,
-    #[serde(default)]
     pub grant_items: Vec<ClaimGrant>,
 }
 
@@ -36,6 +37,7 @@ pub struct CaptchaConfig {
     pub region: String,
     pub prefix: String,
     pub scene_id: String,
+    pub skip_model_request: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +65,15 @@ impl From<String> for ClaimError {
             message,
             next_at: None,
         }
+    }
+}
+
+// Сервер присылает код и числом, и строкой ("0", "1001") — принимаем оба варианта.
+pub(crate) fn response_code(v: &Value) -> Option<i64> {
+    match v.get("code") {
+        Some(Value::Number(n)) => n.as_i64(),
+        Some(Value::String(s)) => s.trim().parse::<i64>().ok(),
+        _ => None,
     }
 }
 
@@ -129,7 +140,6 @@ fn agent() -> ureq::Agent {
 
 pub const EVENT_REPORT_URL: &str = "https://zcode.z.ai/api/v1/event/report";
 pub const ACTIVATION_EVENTS: [&str; 2] = ["app_launch", "app_daily_active"];
-const SCREEN_RESOLUTION: &str = "2560x1440";
 const ACTIVATION_TIMEOUT_SECS: u64 = 10;
 
 pub(crate) fn telemetry_user_id(home: &Path, creds: &Value) -> Option<String> {
@@ -155,8 +165,14 @@ pub(crate) fn telemetry_user_id(home: &Path, creds: &Value) -> Option<String> {
     pick("id").or_else(|| pick("user_id")).map(String::from)
 }
 
-fn activation_event_body(element: &str, event_id: &str, user_id: &str, mid: &str) -> Value {
-    serde_json::json!({
+fn activation_event_body(
+    element: &str,
+    event_id: &str,
+    user_id: &str,
+    mid: &str,
+    screen_resolution: Option<String>,
+) -> Value {
+    let mut body = serde_json::json!({
         "event_id": event_id,
         "client_timezone": quota::client_timezone(),
         "client_language": quota::ZCODE_LANG,
@@ -164,16 +180,20 @@ fn activation_event_body(element: &str, event_id: &str, user_id: &str, mid: &str
         "event_region": "app",
         "event_type": "view",
         "event_text": "",
-        "event_extra_detail": {},
+        "event_extra_detail": { "ui_mode": "code" },
         "user_id": user_id,
-        "screen_resolution": SCREEN_RESOLUTION,
         "app_version": quota::zcode_app_version(),
         "device_os_category": device_os_category(),
         "device_os_version": quota::os_version().unwrap_or_default(),
         "device_mid": mid,
         "mac_id": "",
         "marketing_params": "{}",
-    })
+    });
+    // Реальное разрешение экрана вместо фиксированного; неизвестно — поле не отправляем.
+    if let Some(res) = screen_resolution {
+        body["screen_resolution"] = Value::String(res);
+    }
+    body
 }
 
 fn device_os_category() -> &'static str {
@@ -184,7 +204,11 @@ fn device_os_category() -> &'static str {
     }
 }
 
-pub fn report_activation_events(user_id: &str, device_mid: &str) -> Result<(), String> {
+pub fn report_activation_events(
+    user_id: &str,
+    device_mid: &str,
+    screen_resolution: Option<String>,
+) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout(Duration::from_secs(ACTIVATION_TIMEOUT_SECS))
@@ -195,6 +219,7 @@ pub fn report_activation_events(user_id: &str, device_mid: &str) -> Result<(), S
             &uuid::Uuid::new_v4().to_string(),
             user_id,
             device_mid,
+            screen_resolution.clone(),
         );
         let resp = agent
             .post(EVENT_REPORT_URL)
@@ -206,7 +231,7 @@ pub fn report_activation_events(user_id: &str, device_mid: &str) -> Result<(), S
             .into_string()
             .map_err(|e| crate::i18n::trf("err.claim.activate_req", &[("e", &e.to_string())]))?;
         let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
-        let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+        let code = response_code(&v).unwrap_or(-1);
         if code != 0 {
             return Err(failure_message(code, &v));
         }
@@ -245,17 +270,35 @@ fn http_err(prefix: &str, e: ureq::Error) -> String {
 }
 
 fn preview_once(url: &str, token: &str, mid: Option<String>) -> Result<Vec<ClaimPlan>, String> {
-    let mut req = agent().get(url);
-    for (k, v) in quota::zai_billing_headers_with_mid(token, mid) {
-        req = req.set(&k, &v);
+    let dump = std::env::var("ZSW_DUMP_PREVIEW").ok().as_deref() == Some("1");
+    let mut resp_body = String::new();
+    // Мягкий ретрай на 429 (rate limit): две паузы, суммарно ~2.8 с.
+    for attempt in 0..3 {
+        let mut req = agent().get(url);
+        for (k, v) in quota::zai_billing_headers_with_mid(token, mid.clone()) {
+            req = req.set(&k, &v);
+        }
+        match req.call() {
+            Ok(resp) => {
+                resp_body = resp
+                    .into_string()
+                    .map_err(|e| crate::i18n::trf("err.http.read", &[("e", &e.to_string())]))?;
+                break;
+            }
+            Err(ureq::Error::Status(429, _)) if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(800 * (attempt as u64 + 1)));
+                continue;
+            }
+            Err(e) => return Err(http_err(&crate::i18n::tr("err.claim.preview_req"), e)),
+        }
     }
-    let resp = req
-        .call()
-        .map_err(|e| http_err(&crate::i18n::tr("err.claim.preview_req"), e))?
-        .into_string()
-        .map_err(|e| crate::i18n::trf("err.http.read", &[("e", &e.to_string())]))?;
+    if dump {
+        // Диагностика: печатается только тело ответа (данные планов, без токенов).
+        eprintln!("[zsw] preview response: {resp_body}");
+    }
+    let resp = resp_body;
     let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
-    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    let code = response_code(&v).unwrap_or(-1);
     if code != 0 {
         return Err(failure_message(code, &v));
     }
@@ -305,7 +348,7 @@ pub fn submit_claim(
             next_at: None,
         })?;
     let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
-    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    let code = response_code(&v).unwrap_or(-1);
     if code != 0 {
         return Err(claim_error(code, &v));
     }
@@ -315,6 +358,10 @@ pub fn submit_claim(
 pub fn fetch_captcha_config() -> Result<CaptchaConfig, String> {
     let mut req = agent().get(CLIENT_CONFIGS_URL);
     for (k, v) in quota::zai_billing_headers("") {
+        // Публичный эндпоинт: пустой "Authorization: Bearer" не отправляем вовсе.
+        if k == "Authorization" && v.trim().eq_ignore_ascii_case("Bearer") {
+            continue;
+        }
         req = req.set(&k, &v);
     }
     let resp = req
@@ -323,7 +370,7 @@ pub fn fetch_captcha_config() -> Result<CaptchaConfig, String> {
         .into_string()
         .map_err(|e| crate::i18n::trf("err.http.read", &[("e", &e.to_string())]))?;
     let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
-    if v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) != 0 {
+    if response_code(&v).unwrap_or(-1) != 0 {
         return Err(crate::i18n::tr("err.claim.config_unavailable"));
     }
     let c = v.pointer("/data/configs/captcha").cloned().unwrap_or(Value::Null);
@@ -333,6 +380,11 @@ pub fn fetch_captcha_config() -> Result<CaptchaConfig, String> {
         region: s("region"),
         prefix: s("prefix"),
         scene_id: s("sceneId"),
+        skip_model_request: c
+            .get("skip_model_request")
+            .and_then(|x| x.as_bool())
+            .or_else(|| c.get("skipModelRequest").and_then(|x| x.as_bool()))
+            .unwrap_or(false),
     })
 }
 
@@ -373,18 +425,6 @@ fn parse_plan(p: &Value) -> Option<ClaimPlan> {
                 .collect()
         })
         .unwrap_or_default();
-    let grants = grant_items
-        .iter()
-        .map(|g| {
-            let period_cn = match g.period.as_str() {
-                "daily" => "每日",
-                "weekly" => "每周",
-                "monthly" => "每月",
-                _ => "一次性",
-            };
-            format!("{} · {} Token（{period_cn}）", g.name, fmt_units(g.units))
-        })
-        .collect();
     Some(ClaimPlan {
         name: p.get("name").and_then(|s| s.as_str()).unwrap_or("").trim().to_string(),
         description: p
@@ -395,27 +435,81 @@ fn parse_plan(p: &Value) -> Option<ClaimPlan> {
             .to_string(),
         priority: p.get("priority").and_then(|x| x.as_i64()).unwrap_or(0),
         plan_id,
-        grants,
         grant_items,
     })
 }
 
-fn fmt_units(n: f64) -> String {
-    let trim = |x: f64| {
-        let r = (x * 10.0).round() / 10.0;
-        if (r - r.trunc()).abs() < f64::EPSILON {
-            format!("{}", r.trunc() as i64)
-        } else {
-            format!("{r:.1}")
-        }
-    };
-    if n >= 1e8 {
-        format!("{}亿", trim(n / 1e8))
-    } else if n >= 1e4 {
-        format!("{}万", trim(n / 1e4))
-    } else {
-        format!("{}", n.round() as i64)
+// --- Дедупликация activation-телеметрии -------------------------------------
+// Ключ = sha256(user_id | deviceMid | app_version): сам deviceMid нигде не хранится.
+// Значение = локальная дата последней успешной отправки ("YYYY-MM-DD").
+
+fn activation_cache_path(home: &Path) -> PathBuf {
+    home.join(".zcode-switch").join("state").join("activation-cache.json")
+}
+
+fn activation_cache_key(user_id: &str, device_mid: &str, app_version: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(user_id.as_bytes());
+    h.update(b"|");
+    h.update(device_mid.as_bytes());
+    h.update(b"|");
+    h.update(app_version.as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+fn load_activation_cache(home: &Path) -> HashMap<String, String> {
+    let raw = std::fs::read_to_string(activation_cache_path(home)).unwrap_or_default();
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("entries").and_then(|e| e.as_object()).cloned())
+        .map(|obj| {
+            obj.into_iter()
+                .filter_map(|(k, v)| v.as_str().map(|d| (k, d.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_activation_cache(home: &Path, entries: HashMap<String, String>, today: &str) {
+    // Оставляем только записи за сегодня — файл не растёт.
+    let kept: HashMap<String, String> = entries.into_iter().filter(|(_, d)| d == today).collect();
+    let body = serde_json::json!({ "v": 1, "entries": kept });
+    let path = activation_cache_path(home);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
     }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string(&body).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+pub(crate) fn activation_sent_today(
+    home: &Path,
+    user_id: &str,
+    device_mid: &str,
+    app_version: &str,
+    today: &str,
+) -> bool {
+    let key = activation_cache_key(user_id, device_mid, app_version);
+    load_activation_cache(home).get(&key).map(|d| d == today).unwrap_or(false)
+}
+
+pub(crate) fn mark_activation_sent(
+    home: &Path,
+    user_id: &str,
+    device_mid: &str,
+    app_version: &str,
+    today: &str,
+) {
+    let key = activation_cache_key(user_id, device_mid, app_version);
+    let mut entries = load_activation_cache(home);
+    entries.insert(key, today.to_string());
+    save_activation_cache(home, entries, today);
+}
+
+pub(crate) fn activation_today_str() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
 }
 
 pub fn failure_message(code: i64, body: &Value) -> String {
