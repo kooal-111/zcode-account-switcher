@@ -76,6 +76,9 @@ export function applyMock(invoke) {
       case "claim_start":
         throw "claim.none_pending";
       case "claim_refresh":
+        if (scenario === "claim-error" && args.id === "mock-2") {
+          throw "preview_req: HTTP 500: mock failure";
+        }
         return { plans: scenario === "claim-available" && args.id === "mock-1" ? [MOCK_PLAN] : [], activated: false, activationError: null };
       default:
         return null;

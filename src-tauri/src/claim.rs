@@ -6,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub const BILLING_PREVIEW_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/preview";
@@ -145,8 +146,30 @@ fn agent() -> ureq::Agent {
 }
 
 pub const EVENT_REPORT_URL: &str = "https://zcode.z.ai/api/v1/event/report";
-pub const ACTIVATION_EVENTS: [&str; 2] = ["app_launch", "app_daily_active"];
+const APP_LAUNCH_REFRESH_SECS: i64 = 10 * 60;
 const ACTIVATION_TIMEOUT_SECS: u64 = 10;
+static ACTIVATION_CACHE_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivationEvent {
+    AppLaunch,
+    DailyActive,
+}
+
+impl ActivationEvent {
+    fn element(self) -> &'static str {
+        match self {
+            Self::AppLaunch => "app_launch",
+            Self::DailyActive => "app_daily_active",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivationDue {
+    pub app_launch: bool,
+    pub daily_active: bool,
+}
 
 pub(crate) fn telemetry_user_id(home: &Path, creds: &Value) -> Option<String> {
     let secret = zcrypto::default_secret(home);
@@ -208,7 +231,8 @@ fn device_os_category() -> &'static str {
     }
 }
 
-pub fn report_activation_events(
+pub(crate) fn report_activation_event(
+    event: ActivationEvent,
     user_id: &str,
     device_mid: &str,
     screen_resolution: Option<String>,
@@ -217,28 +241,24 @@ pub fn report_activation_events(
         .timeout_connect(Duration::from_secs(10))
         .timeout(Duration::from_secs(ACTIVATION_TIMEOUT_SECS))
         .build();
-    for element in ACTIVATION_EVENTS {
-        let body = activation_event_body(
-            element,
-            &uuid::Uuid::new_v4().to_string(),
-            user_id,
-            device_mid,
-            screen_resolution.clone(),
-        );
-        let resp = agent
-            .post(EVENT_REPORT_URL)
-            .set("Content-Type", "application/json")
-            .send_json(body)
-            .map_err(|e| {
-                crate::i18n::trf("err.claim.activate_req", &[("e", http_err("", e).trim())])
-            })?
-            .into_string()
-            .map_err(|e| crate::i18n::trf("err.claim.activate_req", &[("e", &e.to_string())]))?;
-        let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
-        let code = response_code(&v).unwrap_or(-1);
-        if code != 0 {
-            return Err(failure_message(code, &v));
-        }
+    let body = activation_event_body(
+        event.element(),
+        &uuid::Uuid::new_v4().to_string(),
+        user_id,
+        device_mid,
+        screen_resolution,
+    );
+    let resp = agent
+        .post(EVENT_REPORT_URL)
+        .set("Content-Type", "application/json")
+        .send_json(body)
+        .map_err(|e| crate::i18n::trf("err.claim.activate_req", &[("e", http_err("", e).trim())]))?
+        .into_string()
+        .map_err(|e| crate::i18n::trf("err.claim.activate_req", &[("e", &e.to_string())]))?;
+    let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
+    let code = response_code(&v).unwrap_or(-1);
+    if code != 0 {
+        return Err(failure_message(code, &v));
     }
     Ok(())
 }
@@ -476,7 +496,15 @@ fn parse_plan(p: &Value) -> Option<ClaimPlan> {
 
 // --- Дедупликация activation-телеметрии -------------------------------------
 // Ключ = sha256(user_id | deviceMid | app_version): сам deviceMid нигде не хранится.
-// Значение = локальная дата последней успешной отправки ("YYYY-MM-DD").
+// app_daily_active отправляется раз в локальный день, как в официальном клиенте.
+// app_launch можно повторить после cooldown: иначе акция, включённая уже после
+// первого фонового прохода за день, остаётся невидимой до следующего дня.
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ActivationCacheEntry {
+    daily_date: Option<String>,
+    launch_at: Option<i64>,
+}
 
 fn activation_cache_path(home: &Path) -> PathBuf {
     home.join(".zcode-switch")
@@ -494,23 +522,65 @@ fn activation_cache_key(user_id: &str, device_mid: &str, app_version: &str) -> S
     format!("{:x}", h.finalize())
 }
 
-fn load_activation_cache(home: &Path) -> HashMap<String, String> {
+fn load_activation_cache(home: &Path) -> HashMap<String, ActivationCacheEntry> {
     let raw = std::fs::read_to_string(activation_cache_path(home)).unwrap_or_default();
     serde_json::from_str::<Value>(&raw)
         .ok()
         .and_then(|v| v.get("entries").and_then(|e| e.as_object()).cloned())
         .map(|obj| {
             obj.into_iter()
-                .filter_map(|(k, v)| v.as_str().map(|d| (k, d.to_string())))
+                .filter_map(|(k, v)| {
+                    // v1: значение было строкой с датой. Сохраняем дедупликацию
+                    // daily, но считаем launch просроченным, чтобы обновление
+                    // сразу устранило суточную слепую зону.
+                    if let Some(daily_date) = v.as_str() {
+                        return Some((
+                            k,
+                            ActivationCacheEntry {
+                                daily_date: Some(daily_date.to_string()),
+                                launch_at: None,
+                            },
+                        ));
+                    }
+                    let entry = ActivationCacheEntry {
+                        daily_date: v
+                            .get("daily_date")
+                            .and_then(Value::as_str)
+                            .map(String::from),
+                        launch_at: v.get("launch_at").and_then(Value::as_i64),
+                    };
+                    (entry.daily_date.is_some() || entry.launch_at.is_some()).then_some((k, entry))
+                })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn save_activation_cache(home: &Path, entries: HashMap<String, String>, today: &str) {
-    // Оставляем только записи за сегодня — файл не растёт.
-    let kept: HashMap<String, String> = entries.into_iter().filter(|(_, d)| d == today).collect();
-    let body = serde_json::json!({ "v": 1, "entries": kept });
+fn save_activation_cache(
+    home: &Path,
+    entries: HashMap<String, ActivationCacheEntry>,
+    today: &str,
+    now: i64,
+) {
+    // Старые версии клиента/аккаунты не должны бесконечно раздувать файл.
+    let keep_after = now.saturating_sub(7 * 24 * 60 * 60);
+    let kept: serde_json::Map<String, Value> = entries
+        .into_iter()
+        .filter(|(_, e)| {
+            e.daily_date.as_deref() == Some(today)
+                || e.launch_at.is_some_and(|launch_at| launch_at >= keep_after)
+        })
+        .map(|(k, e)| {
+            (
+                k,
+                serde_json::json!({
+                    "daily_date": e.daily_date,
+                    "launch_at": e.launch_at,
+                }),
+            )
+        })
+        .collect();
+    let body = serde_json::json!({ "v": 2, "entries": kept });
     let path = activation_cache_path(home);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -521,18 +591,22 @@ fn save_activation_cache(home: &Path, entries: HashMap<String, String>, today: &
     }
 }
 
-pub(crate) fn activation_sent_today(
+pub(crate) fn activation_due(
     home: &Path,
     user_id: &str,
     device_mid: &str,
     app_version: &str,
     today: &str,
-) -> bool {
+    now: i64,
+) -> ActivationDue {
     let key = activation_cache_key(user_id, device_mid, app_version);
-    load_activation_cache(home)
-        .get(&key)
-        .map(|d| d == today)
-        .unwrap_or(false)
+    let entry = load_activation_cache(home).remove(&key).unwrap_or_default();
+    ActivationDue {
+        app_launch: entry
+            .launch_at
+            .is_none_or(|last| last > now || now.saturating_sub(last) >= APP_LAUNCH_REFRESH_SECS),
+        daily_active: entry.daily_date.as_deref() != Some(today),
+    }
 }
 
 pub(crate) fn mark_activation_sent(
@@ -541,15 +615,30 @@ pub(crate) fn mark_activation_sent(
     device_mid: &str,
     app_version: &str,
     today: &str,
+    now: i64,
+    event: ActivationEvent,
 ) {
+    // preview-очередь выполняет два аккаунта параллельно; сериализуем
+    // read-modify-write, чтобы один аккаунт не затёр отметку другого.
+    let _cache_guard = ACTIVATION_CACHE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = activation_cache_key(user_id, device_mid, app_version);
     let mut entries = load_activation_cache(home);
-    entries.insert(key, today.to_string());
-    save_activation_cache(home, entries, today);
+    let entry = entries.entry(key).or_default();
+    match event {
+        ActivationEvent::AppLaunch => entry.launch_at = Some(now),
+        ActivationEvent::DailyActive => entry.daily_date = Some(today.to_string()),
+    }
+    save_activation_cache(home, entries, today, now);
 }
 
 pub(crate) fn activation_today_str() -> String {
     Local::now().format("%Y-%m-%d").to_string()
+}
+
+pub(crate) fn activation_now() -> i64 {
+    chrono::Utc::now().timestamp()
 }
 
 pub fn failure_message(code: i64, body: &Value) -> String {
@@ -717,27 +806,151 @@ mod tests {
         let home = std::env::temp_dir().join(format!("zsw-act-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
         let today = "2030-01-02";
-        assert!(!activation_sent_today(
-            &home, "user-a", "mid-1", "3.17.1", today
-        ));
-        mark_activation_sent(&home, "user-a", "mid-1", "3.17.1", today);
-        assert!(activation_sent_today(
-            &home, "user-a", "mid-1", "3.17.1", today
-        ));
+        let now = 1_893_456_000;
+        assert_eq!(
+            activation_due(&home, "user-a", "mid-1", "3.17.1", today, now),
+            ActivationDue {
+                app_launch: true,
+                daily_active: true,
+            }
+        );
+        mark_activation_sent(
+            &home,
+            "user-a",
+            "mid-1",
+            "3.17.1",
+            today,
+            now,
+            ActivationEvent::DailyActive,
+        );
+        let due = activation_due(&home, "user-a", "mid-1", "3.17.1", today, now);
+        assert!(due.app_launch);
+        assert!(!due.daily_active);
+        mark_activation_sent(
+            &home,
+            "user-a",
+            "mid-1",
+            "3.17.1",
+            today,
+            now,
+            ActivationEvent::AppLaunch,
+        );
+        assert_eq!(
+            activation_due(&home, "user-a", "mid-1", "3.17.1", today, now),
+            ActivationDue {
+                app_launch: false,
+                daily_active: false,
+            }
+        );
+        assert!(
+            activation_due(
+                &home,
+                "user-a",
+                "mid-1",
+                "3.17.1",
+                today,
+                now + APP_LAUNCH_REFRESH_SECS
+            )
+            .app_launch
+        );
+        // Сдвиг часов назад не должен навсегда заморозить app_launch.
+        assert!(activation_due(&home, "user-a", "mid-1", "3.17.1", today, now - 1).app_launch);
         // другой аккаунт/девайс/версия — другой ключ
-        assert!(!activation_sent_today(
-            &home, "user-b", "mid-1", "3.17.1", today
-        ));
-        assert!(!activation_sent_today(
-            &home, "user-a", "mid-2", "3.17.1", today
-        ));
-        assert!(!activation_sent_today(
-            &home, "user-a", "mid-1", "3.18.0", today
-        ));
+        assert!(activation_due(&home, "user-b", "mid-1", "3.17.1", today, now).daily_active);
+        assert!(activation_due(&home, "user-a", "mid-2", "3.17.1", today, now).daily_active);
+        assert!(activation_due(&home, "user-a", "mid-1", "3.18.0", today, now).daily_active);
         // в файле нет сырого deviceMid и user_id
         let raw = std::fs::read_to_string(activation_cache_path(&home)).unwrap();
         assert!(!raw.contains("mid-1"));
         assert!(!raw.contains("user-a"));
+        assert!(raw.contains("\"v\":2"));
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn activation_cache_v1_keeps_daily_but_releases_launch() {
+        let home = std::env::temp_dir().join(format!("zsw-act-v1-{}", uuid::Uuid::new_v4()));
+        let path = activation_cache_path(&home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let key = activation_cache_key("user-a", "mid-1", "3.17.1");
+        std::fs::write(
+            &path,
+            serde_json::json!({ "v": 1, "entries": { key: "2030-01-02" } }).to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            activation_due(
+                &home,
+                "user-a",
+                "mid-1",
+                "3.17.1",
+                "2030-01-02",
+                1_893_456_000,
+            ),
+            ActivationDue {
+                app_launch: true,
+                daily_active: false,
+            }
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn activation_cache_parallel_accounts_do_not_overwrite_each_other() {
+        let home = std::sync::Arc::new(
+            std::env::temp_dir().join(format!("zsw-act-race-{}", uuid::Uuid::new_v4())),
+        );
+        std::fs::create_dir_all(home.as_ref()).unwrap();
+        let today = "2030-01-02";
+        let now = 1_893_456_000;
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let home = home.clone();
+                std::thread::spawn(move || {
+                    let user = format!("user-{i}");
+                    let mid = format!("mid-{i}");
+                    mark_activation_sent(
+                        home.as_ref(),
+                        &user,
+                        &mid,
+                        "3.17.2",
+                        today,
+                        now,
+                        ActivationEvent::AppLaunch,
+                    );
+                    mark_activation_sent(
+                        home.as_ref(),
+                        &user,
+                        &mid,
+                        "3.17.2",
+                        today,
+                        now,
+                        ActivationEvent::DailyActive,
+                    );
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        for i in 0..8 {
+            let due = activation_due(
+                home.as_ref(),
+                &format!("user-{i}"),
+                &format!("mid-{i}"),
+                "3.17.2",
+                today,
+                now,
+            );
+            assert_eq!(
+                due,
+                ActivationDue {
+                    app_launch: false,
+                    daily_active: false,
+                }
+            );
+        }
+        std::fs::remove_dir_all(home.as_ref()).ok();
     }
 }

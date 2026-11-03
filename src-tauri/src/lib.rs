@@ -368,18 +368,40 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
             match claim::telemetry_user_id(&paths.home, &acc.credentials) {
                 Some(uid) => {
                     let today = claim::activation_today_str();
+                    let now = claim::activation_now();
                     let ver = quota::zcode_app_version();
-                    if claim::activation_sent_today(&paths.home, &uid, &mid, &ver, &today) {
-                        (false, None)
-                    } else {
-                        match claim::report_activation_events(&uid, &mid, resolution) {
+                    let due = claim::activation_due(&paths.home, &uid, &mid, &ver, &today, now);
+                    let mut sent = false;
+                    let mut errors = Vec::new();
+                    for event in [
+                        due.app_launch.then_some(claim::ActivationEvent::AppLaunch),
+                        due.daily_active
+                            .then_some(claim::ActivationEvent::DailyActive),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        match claim::report_activation_event(event, &uid, &mid, resolution.clone())
+                        {
                             Ok(()) => {
-                                claim::mark_activation_sent(&paths.home, &uid, &mid, &ver, &today);
-                                (true, None)
+                                claim::mark_activation_sent(
+                                    &paths.home,
+                                    &uid,
+                                    &mid,
+                                    &ver,
+                                    &today,
+                                    now,
+                                    event,
+                                );
+                                sent = true;
                             }
-                            Err(e) => (false, Some(e)),
+                            Err(e) => errors.push(e),
                         }
                     }
+                    if !sent && !errors.is_empty() {
+                        return Err(errors.join("; "));
+                    }
+                    (sent, (!errors.is_empty()).then(|| errors.join("; ")))
                 }
                 // Отсутствие user_info виден по тегу «Нужен повторный вход» в UI;
                 // тост на каждый refresh был бы спамом при множестве аккаунтов.

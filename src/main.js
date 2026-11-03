@@ -90,7 +90,11 @@ async function loadClaimPreview(id) {
   claimable[id] = next;
   if (!uiLocked()) render();
   try {
-    const plans = await invokeFn("claim_preview", { id });
+    // Обычная фоновая проверка тоже должна уметь выполнить ограниченную
+    // activation-последовательность. Иначе при выключенном auto-claim акция,
+    // открытая сервером в течение дня, останется невидимой до ручного refresh.
+    const refreshed = await invokeFn("claim_refresh", { id });
+    const plans = refreshed?.plans || [];
     if (!(state?.accounts || []).some((a) => a.id === id)) {
       delete claimable[id]; // аккаунт удалили, пока запрос был в полёте
       return;
