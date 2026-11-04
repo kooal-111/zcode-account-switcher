@@ -430,6 +430,38 @@ fn merge_claim_plans(mut base: Vec<ClaimPlan>, extra: Vec<ClaimPlan>) -> Vec<Cla
     base
 }
 
+// Серверные HTTP-ошибки клейма, которые мы умеем объяснять по-человечески.
+// "captcha verify failed" приходит HTTP 400 на клейм без валидного параметра.
+fn classify_claim_server_msg(msg: &str) -> Option<&'static str> {
+    let m = msg.trim().to_ascii_lowercase();
+    if m.contains("captcha verify") {
+        Some("claim.fail.captcha_verify")
+    } else if m.contains("security verification") || m.contains("请完成安全验证") {
+        Some("claim.fail.security_verification")
+    } else {
+        None
+    }
+}
+
+fn claim_http_error(prefix: &str, e: ureq::Error) -> String {
+    if let ureq::Error::Status(code, resp) = e {
+        let body = resp.into_string().unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| {
+                ["msg", "message", "error"]
+                    .iter()
+                    .find_map(|k| v.get(k).and_then(|x| x.as_str()).map(String::from))
+            })
+            .unwrap_or_default();
+        if let Some(key) = classify_claim_server_msg(&msg) {
+            return crate::i18n::tr(key);
+        }
+        return format!("{prefix} HTTP {code}: {msg}");
+    }
+    format!("{prefix} {e}")
+}
+
 fn http_err(prefix: &str, e: ureq::Error) -> String {
     if let ureq::Error::Status(code, resp) = e {
         let body = resp.into_string().unwrap_or_default();
@@ -519,7 +551,7 @@ pub fn submit_claim(
         .send_json(serde_json::json!({ "plan_id": plan_id }))
         .map_err(|e| ClaimError {
             code: -1,
-            message: http_err(&crate::i18n::tr("err.claim.claim_req"), e),
+            message: claim_http_error(&crate::i18n::tr("err.claim.claim_req"), e),
             next_at: None,
         })?
         .into_string()
@@ -1028,6 +1060,23 @@ mod tests {
         let err = claim_error(1005, &fixture("claim_error_1005.json"));
         assert_eq!(err.code, 1005);
         assert_eq!(err.next_at, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn claim_server_msg_classification() {
+        assert_eq!(
+            classify_claim_server_msg("captcha verify failed"),
+            Some("claim.fail.captcha_verify")
+        );
+        assert_eq!(
+            classify_claim_server_msg(" Captcha Verify Failed "),
+            Some("claim.fail.captcha_verify")
+        );
+        assert_eq!(
+            classify_claim_server_msg("请完成安全验证"),
+            Some("claim.fail.security_verification")
+        );
+        assert_eq!(classify_claim_server_msg("some other error"), None);
     }
 
     #[test]

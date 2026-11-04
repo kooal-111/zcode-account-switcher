@@ -141,12 +141,15 @@ async function run() {
     showRetry();
     return;
   }
-  // В 3.17.1 skipModelRequest=true (или enabled=false) означает, что
-  // request verification для start-plan не требуется. Backend повторно
-  // проверит свежий серверный конфиг перед запросом без CAPTCHA-заголовка.
-  if (!cfg.enabled || cfg.skip_model_request) {
-    region = cfg.region || null;
-    submitClaim("");
+  // ВАЖНО (проверено на живом сервере 2026-11-04): флаг skip_model_request
+  // относится к проверке МОДЕЛЬНЫХ запросов, а не к клеймам. Claim с пустым
+  // captcha-параметром сервер отклоняет: HTTP 400 «captcha verify failed».
+  // Клиент ZCode перед клеймом делает preflight через SDK (тихая traceless-
+  // проверка) и шлёт настоящий параметр — повторяем ровно это.
+  if (!cfg.enabled) {
+    setState("fatal_error", "err");
+    status(t("c.cfgUnavailable"), "err");
+    detail(t("c.cfgUnavailableDetail"));
     return;
   }
   if (!cfg.scene_id) {
