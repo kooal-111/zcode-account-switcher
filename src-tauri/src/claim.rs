@@ -6,12 +6,14 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 pub const BILLING_PREVIEW_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/preview";
 pub const BILLING_CLAIM_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/claim";
 pub const CLIENT_CONFIGS_URL: &str = "https://zcode.z.ai/api/v1/client/configs";
+pub const MARKETING_TOUCH_URL: &str = "https://zcode.z.ai/api/v1/marketing/touch";
 
 const CLAIM_TIMEOUT_SECS: u64 = 25;
 
@@ -149,6 +151,7 @@ pub const EVENT_REPORT_URL: &str = "https://zcode.z.ai/api/v1/event/report";
 const APP_LAUNCH_REFRESH_SECS: i64 = 10 * 60;
 const ACTIVATION_TIMEOUT_SECS: u64 = 10;
 static ACTIVATION_CACHE_LOCK: Mutex<()> = Mutex::new(());
+static MARKETING_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ActivationEvent {
@@ -232,6 +235,9 @@ fn device_os_category() -> &'static str {
 }
 
 pub(crate) fn report_activation_event(
+    home: &Path,
+    creds: &Value,
+    config: Option<&Value>,
     event: ActivationEvent,
     user_id: &str,
     device_mid: &str,
@@ -248,8 +254,13 @@ pub(crate) fn report_activation_event(
         device_mid,
         screen_resolution,
     );
-    let resp = agent
-        .post(EVENT_REPORT_URL)
+    let secret = zcrypto::default_secret(home);
+    let token = claim_token(creds, config, &secret)?;
+    let mut req = agent.post(EVENT_REPORT_URL);
+    for (key, value) in quota::zai_billing_headers_with_mid(&token, Some(device_mid.to_string())) {
+        req = req.set(&key, &value);
+    }
+    let resp = req
         .set("Content-Type", "application/json")
         .send_json(body)
         .map_err(|e| crate::i18n::trf("err.claim.activate_req", &[("e", http_err("", e).trim())]))?
@@ -277,6 +288,146 @@ pub fn preview_plans(
         quota::client_platform()
     );
     preview_once(&url, &token, device_mid)
+}
+
+/// Returns every currently claimable plan exposed by either server channel.
+/// Recent Z Code campaigns may be delivered through marketing/touch without
+/// appearing in billing/preview, so callers must use this function for both
+/// display and the final pre-claim validation.
+pub fn collect_claimable_plans(
+    home: &Path,
+    creds: &Value,
+    config: Option<&Value>,
+    device_mid: String,
+) -> Result<Vec<ClaimPlan>, String> {
+    let preview = preview_plans(home, creds, config, Some(device_mid.clone()));
+    let marketing = marketing_touch_plans(home, creds, config, Some(device_mid));
+
+    match (preview, marketing) {
+        (Ok(base), Ok(extra)) => Ok(merge_claim_plans(base, extra)),
+        (Ok(base), Err(_)) if !base.is_empty() => Ok(base),
+        (Err(_), Ok(extra)) if !extra.is_empty() => Ok(extra),
+        (Ok(_), Err(marketing_error)) => Err(format!("marketing/touch: {marketing_error}")),
+        (Err(preview_error), Ok(_)) => Err(preview_error),
+        (Err(preview_error), Err(marketing_error)) => Err(format!(
+            "{preview_error}; marketing/touch: {marketing_error}"
+        )),
+    }
+}
+
+fn marketing_touch_plans(
+    home: &Path,
+    creds: &Value,
+    config: Option<&Value>,
+    device_mid: Option<String>,
+) -> Result<Vec<ClaimPlan>, String> {
+    let secret = zcrypto::default_secret(home);
+    let token = claim_token(creds, config, &secret)?;
+    // Официальный клиент увеличивает seq на каждом опросе. Это также не даёт
+    // промежуточному кэшу удержать пустой ответ после включения акции.
+    let seq = MARKETING_SEQ.fetch_add(1, Ordering::Relaxed);
+    let url = format!("{MARKETING_TOUCH_URL}?seq={seq}");
+    let mut req = agent().get(&url);
+    for (key, value) in quota::zai_billing_headers_with_mid(&token, device_mid) {
+        req = req.set(&key, &value);
+    }
+    let body = req
+        .call()
+        .map_err(|e| http_err("marketing/touch", e))?
+        .into_string()
+        .map_err(|e| crate::i18n::trf("err.http.read", &[("e", &e.to_string())]))?;
+    let value: Value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+    let code = response_code(&value).unwrap_or(-1);
+    if code != 0 {
+        return Err(failure_message(code, &value));
+    }
+
+    let mut plans = Vec::new();
+    let mut action_plans = Vec::new();
+    if let Some(deliveries) = value.pointer("/data/deliveries").and_then(Value::as_array) {
+        for delivery in deliveries {
+            walk_marketing_delivery(delivery, &mut plans, &mut action_plans);
+        }
+    }
+    for (plan_id, action_text) in action_plans {
+        if !plans.iter().any(|plan| plan.plan_id == plan_id) {
+            plans.push(ClaimPlan {
+                name: action_text.unwrap_or_else(|| plan_id.clone()),
+                plan_id,
+                description: String::new(),
+                priority: 0,
+                grant_items: Vec::new(),
+            });
+        }
+    }
+    plans.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.plan_id.cmp(&b.plan_id)));
+    plans.dedup_by(|a, b| a.plan_id == b.plan_id);
+    Ok(plans)
+}
+
+fn walk_marketing_delivery(
+    value: &Value,
+    plans: &mut Vec<ClaimPlan>,
+    action_plans: &mut Vec<(String, Option<String>)>,
+) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                walk_marketing_delivery(item, plans, action_plans);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(action) = map.get("action").and_then(Value::as_object) {
+                let kind = action
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if kind == "claim_zcode_plan" || kind == "claim_plan" {
+                    let plan_id = action
+                        .get("args")
+                        .and_then(|args| args.get("plan_id"))
+                        .and_then(Value::as_str)
+                        .or_else(|| action.get("planId").and_then(Value::as_str))
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty());
+                    if let Some(plan_id) = plan_id {
+                        let text = map
+                            .get("text")
+                            .and_then(|value| value.get("content"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(String::from);
+                        action_plans.push((plan_id.to_string(), text));
+                    }
+                }
+            }
+            if let Some(plan) = parse_plan(value) {
+                plans.push(plan);
+            }
+            for nested in map.values() {
+                walk_marketing_delivery(nested, plans, action_plans);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn merge_claim_plans(mut base: Vec<ClaimPlan>, extra: Vec<ClaimPlan>) -> Vec<ClaimPlan> {
+    for plan in extra {
+        if let Some(existing) = base.iter_mut().find(|item| item.plan_id == plan.plan_id) {
+            if existing.description.is_empty() {
+                existing.description = plan.description;
+            }
+            if existing.grant_items.is_empty() {
+                existing.grant_items = plan.grant_items;
+            }
+        } else {
+            base.push(plan);
+        }
+    }
+    base.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.plan_id.cmp(&b.plan_id)));
+    base
 }
 
 fn http_err(prefix: &str, e: ureq::Error) -> String {
@@ -526,8 +677,14 @@ fn load_activation_cache(home: &Path) -> HashMap<String, ActivationCacheEntry> {
     let raw = std::fs::read_to_string(activation_cache_path(home)).unwrap_or_default();
     serde_json::from_str::<Value>(&raw)
         .ok()
-        .and_then(|v| v.get("entries").and_then(|e| e.as_object()).cloned())
-        .map(|obj| {
+        .and_then(|v| {
+            let version = v.get("v").and_then(Value::as_i64).unwrap_or(1);
+            v.get("entries")
+                .and_then(|e| e.as_object())
+                .cloned()
+                .map(|entries| (version, entries))
+        })
+        .map(|(version, obj)| {
             obj.into_iter()
                 .filter_map(|(k, v)| {
                     // v1: значение было строкой с датой. Сохраняем дедупликацию
@@ -547,7 +704,12 @@ fn load_activation_cache(home: &Path) -> HashMap<String, ActivationCacheEntry> {
                             .get("daily_date")
                             .and_then(Value::as_str)
                             .map(String::from),
-                        launch_at: v.get("launch_at").and_then(Value::as_i64),
+                        // v2 мог отметить анонимный event/report как успешный:
+                        // до v3 запрос не содержал Authorization. Один раз
+                        // освобождаем launch, сохраняя daily-дедупликацию.
+                        launch_at: (version >= 3)
+                            .then(|| v.get("launch_at").and_then(Value::as_i64))
+                            .flatten(),
                     };
                     (entry.daily_date.is_some() || entry.launch_at.is_some()).then_some((k, entry))
                 })
@@ -580,7 +742,7 @@ fn save_activation_cache(
             )
         })
         .collect();
-    let body = serde_json::json!({ "v": 2, "entries": kept });
+    let body = serde_json::json!({ "v": 3, "entries": kept });
     let path = activation_cache_path(home);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -743,6 +905,73 @@ mod tests {
     }
 
     #[test]
+    fn marketing_delivery_finds_embedded_and_action_only_plans() {
+        let delivery = json!({
+            "banner": {
+                "background": {
+                    "args": {
+                        "zcode_plan": {
+                            "plan_id": "promo-full",
+                            "name": "Full promo",
+                            "description": "Today only",
+                            "priority": 7,
+                            "entitlements": [{
+                                "meter": "model_usage",
+                                "unit_type": "token",
+                                "name": "GLM",
+                                "quota": 12345,
+                                "period": "daily"
+                            }]
+                        }
+                    }
+                },
+                "buttons": [{
+                    "text": { "format": "plaintext", "content": "Claim today bonus" },
+                    "action": {
+                        "type": "claim_zcode_plan",
+                        "args": { "plan_id": "promo-action-only" }
+                    }
+                }]
+            }
+        });
+        let mut plans = Vec::new();
+        let mut ids = Vec::new();
+        walk_marketing_delivery(&delivery, &mut plans, &mut ids);
+        assert!(plans.iter().any(|plan| plan.plan_id == "promo-full"));
+        assert!(ids
+            .iter()
+            .any(|(id, text)| id == "promo-action-only"
+                && text.as_deref() == Some("Claim today bonus")));
+    }
+
+    #[test]
+    fn merged_claim_plans_deduplicate_and_keep_preview_details() {
+        let preview = ClaimPlan {
+            plan_id: "same".into(),
+            name: "Preview name".into(),
+            description: "Preview description".into(),
+            priority: 10,
+            grant_items: vec![ClaimGrant {
+                name: "GLM".into(),
+                units: 10.0,
+                period: "daily".into(),
+            }],
+        };
+        let marketing = ClaimPlan {
+            plan_id: "same".into(),
+            name: "Marketing name".into(),
+            description: "Marketing description".into(),
+            priority: 0,
+            grant_items: Vec::new(),
+        };
+        let merged = merge_claim_plans(vec![preview], vec![marketing]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "Preview name");
+        assert_eq!(merged[0].description, "Preview description");
+        assert_eq!(merged[0].grant_items.len(), 1);
+    }
+
+    #[test]
     fn captcha_config_camel_snake_and_disabled() {
         let cfg = parse_captcha_config(&fixture("captcha_enabled_camel.json"));
         assert!(cfg.enabled);
@@ -863,7 +1092,7 @@ mod tests {
         let raw = std::fs::read_to_string(activation_cache_path(&home)).unwrap();
         assert!(!raw.contains("mid-1"));
         assert!(!raw.contains("user-a"));
-        assert!(raw.contains("\"v\":2"));
+        assert!(raw.contains("\"v\":3"));
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -887,6 +1116,41 @@ mod tests {
                 "3.17.1",
                 "2030-01-02",
                 1_893_456_000,
+            ),
+            ActivationDue {
+                app_launch: true,
+                daily_active: false,
+            }
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn activation_cache_v2_releases_unauthenticated_launch() {
+        let home = std::env::temp_dir().join(format!("zsw-act-v2-{}", uuid::Uuid::new_v4()));
+        let path = activation_cache_path(&home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let key = activation_cache_key("user-a", "mid-1", "3.17.2");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "v": 2,
+                "entries": {
+                    key: { "daily_date": "2030-01-02", "launch_at": 1_893_456_000 }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            activation_due(
+                &home,
+                "user-a",
+                "mid-1",
+                "3.17.2",
+                "2030-01-02",
+                1_893_456_001,
             ),
             ActivationDue {
                 app_launch: true,

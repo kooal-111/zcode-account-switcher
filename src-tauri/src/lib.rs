@@ -321,12 +321,7 @@ async fn claim_preview(id: String) -> Result<Vec<claim::ClaimPlan>, String> {
         let paths = Paths::detect();
         let mid = store::ensure_virtual_device_mid(&paths, &id)?;
         let acc = load_account(&paths, &id)?;
-        claim::preview_plans(
-            &paths.home,
-            &acc.credentials,
-            acc.config.as_ref(),
-            Some(mid),
-        )
+        claim::collect_claimable_plans(&paths.home, &acc.credentials, acc.config.as_ref(), mid)
     })
     .await
     .map_err(|e| i18n::trf("err.task.join", &[("e", &e.to_string())]))?
@@ -349,11 +344,11 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
         let resolution = screen_resolution(&app);
         // Сначала выполняем read-only preview. Если предложение уже доступно,
         // activation-телеметрия не нужна вообще.
-        let initial_plans = claim::preview_plans(
+        let initial_plans = claim::collect_claimable_plans(
             &paths.home,
             &acc.credentials,
             acc.config.as_ref(),
-            Some(mid.clone()),
+            mid.clone(),
         )?;
         if !initial_plans.is_empty() {
             return Ok(ClaimRefreshResult {
@@ -381,8 +376,15 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
                     .into_iter()
                     .flatten()
                     {
-                        match claim::report_activation_event(event, &uid, &mid, resolution.clone())
-                        {
+                        match claim::report_activation_event(
+                            &paths.home,
+                            &acc.credentials,
+                            acc.config.as_ref(),
+                            event,
+                            &uid,
+                            &mid,
+                            resolution.clone(),
+                        ) {
                             Ok(()) => {
                                 claim::mark_activation_sent(
                                     &paths.home,
@@ -409,12 +411,7 @@ async fn claim_refresh(app: AppHandle, id: String) -> Result<ClaimRefreshResult,
             };
         // Повторный preview имеет смысл только сразу после успешной activation.
         let plans = if activated {
-            claim::preview_plans(
-                &paths.home,
-                &acc.credentials,
-                acc.config.as_ref(),
-                Some(mid),
-            )?
+            claim::collect_claimable_plans(&paths.home, &acc.credentials, acc.config.as_ref(), mid)?
         } else {
             initial_plans
         };
@@ -446,11 +443,11 @@ async fn claim_start(
             let paths = Paths::detect();
             let mid = store::ensure_virtual_device_mid(&paths, &id)?;
             let acc = load_account(&paths, &id)?;
-            let plans = claim::preview_plans(
+            let plans = claim::collect_claimable_plans(
                 &paths.home,
                 &acc.credentials,
                 acc.config.as_ref(),
-                Some(mid.clone()),
+                mid.clone(),
             )?;
             let plan = plans
                 .iter()

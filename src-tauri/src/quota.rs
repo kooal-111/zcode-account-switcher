@@ -49,7 +49,7 @@ pub(crate) fn canonical_model_id(id: &str) -> String {
 
 const ZCODE_ORIGIN: &str = "https://zcode.z.ai";
 pub(crate) const ZCODE_LANG: &str = "zh-CN";
-const ZCODE_CHANNEL: &str = "stable";
+const ZCODE_CHANNEL: &str = "production";
 
 pub(crate) fn device_mid() -> Option<String> {
     static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
